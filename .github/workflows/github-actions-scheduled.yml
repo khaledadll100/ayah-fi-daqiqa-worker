@@ -1,0 +1,159 @@
+name: Ayah Scheduled Worker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+concurrency:
+  group: ayah-scheduled-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Claim due task
+        env:
+          AYAH_API_KEY: ${{ secrets.AYAH_API_KEY }}
+        run: |
+          curl -sS --fail-with-body -H "X-API-Key: ${AYAH_API_KEY}" \
+            "https://khaled.elevatefollowers.com/worker-api.php?action=claim" -o task-response.json
+          cat task-response.json
+          jq -e '.success == true' task-response.json >/dev/null
+          if [ "$(jq -r '.task // empty' task-response.json)" = "" ]; then
+            echo "NO_TASK=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "NO_TASK=0" >> "$GITHUB_ENV"
+          jq -c '.task' task-response.json > task.json
+
+      - name: Setup Node.js
+        if: env.NO_TASK == '0'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install Playwright
+        if: env.NO_TASK == '0'
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install --with-deps chromium
+
+      - name: Generate scheduled videos
+        if: env.NO_TASK == '0'
+        run: |
+          mkdir -p output
+          node <<'EOF'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          const task = JSON.parse(fs.readFileSync('task.json','utf8'));
+          const p = task.payload;
+          const browser = await chromium.launch({headless:true,args:['--autoplay-policy=no-user-gesture-required']});
+          const context = await browser.newContext({acceptDownloads:true,viewport:{width:1080,height:1920}});
+          const page = await context.newPage();
+          page.on('console',m=>console.log('[BROWSER]',m.type(),m.text()));
+          await page.goto('https://khaled.elevatefollowers.com/',{waitUntil:'domcontentloaded',timeout:60000});
+          await page.waitForTimeout(10000);
+          const batch=page.locator('button').filter({hasText:'مولد فيديوهات القرآن التلقائي'}).first();
+          await batch.evaluate(b=>b.click());
+          await page.waitForTimeout(4000);
+          const s=page.locator('select:visible');
+          if(await s.count()!==7) throw new Error('Expected 7 visible batch selects');
+          async function pick(i,text){
+            const opts=await s.nth(i).locator('option').allTextContents();
+            const m=opts.find(x=>x.trim().includes(String(text).trim()));
+            if(!m) throw new Error(`Option not found: ${text}`);
+            await s.nth(i).selectOption({label:m.trim()}); await page.waitForTimeout(300);
+          }
+          // السورة تُحفظ كرقم value، لذلك نختار بالقيمة مباشرة.
+          await s.nth(0).selectOption(String(p.surah));
+          await pick(1,p.reciter);
+          await pick(2,p.translation||'بدون ترجمة');
+          await pick(3,p.tafsir||'بدون تفسير');
+          const vpvLabel = Number(p.verses_per_video)===1?'آية واحدة':Number(p.verses_per_video)===2?'آيتان':`${p.verses_per_video} آيات`;
+          await pick(4,vpvLabel);
+          await pick(5,'WEBM');
+          if(!p.random_background && p.background_label && !p.background_label.includes('استخدم الخلفية الحالية')) await pick(6,p.background_label.split('·')[0].trim());
+          const create=page.locator('button:visible').filter({hasText:'إنشاء قائمة الإنتاج'}).first();
+          const root=create.locator('xpath=ancestor::*[count(.//select) >= 7][1]');
+          const nums=root.locator('input[type="number"]');
+          await nums.nth(0).fill(String(p.from_ayah));
+          await nums.nth(1).fill(String(p.to_ayah));
+          const randomBtn=root.locator('button:visible').filter({hasText:'اختيار خلفية عشوائية مختلفة لكل فيديو'}).first();
+          if(await randomBtn.count()){
+            const txt=await randomBtn.innerText();
+            const enabled=txt.includes('مفعّل');
+            if(Boolean(p.random_background)!==enabled) await randomBtn.click({force:true});
+          }
+          await create.click({force:true});
+          await page.waitForTimeout(12000);
+          const expected=Math.ceil((Number(p.to_ayah)-Number(p.from_ayah)+1)/Number(p.verses_per_video||1));
+          let saved=0;
+          page.on('download',async d=>{
+            saved++;
+            const path=`output/video-${String(saved).padStart(3,'0')}.webm`;
+            await d.saveAs(path);
+            console.log('Saved',path);
+          });
+          const start=page.locator('button:visible').filter({hasText:'بدء الإنتاج'}).first();
+          await start.click({force:true});
+          const deadline=Date.now()+35*60*1000;
+          while(saved<expected && Date.now()<deadline){ await page.waitForTimeout(2000); }
+          if(saved<expected) throw new Error(`Expected ${expected} downloads, got ${saved}`);
+          fs.writeFileSync('upload-config.json',JSON.stringify({task_id:task.id,endpoint:p.destination_endpoint,key:p.destination_api_key},null,2));
+          await browser.close();
+          EOF
+
+      - name: Upload videos to selected hosting
+        if: env.NO_TASK == '0'
+        run: |
+          ENDPOINT=$(jq -r '.endpoint' upload-config.json)
+          DEST_KEY=$(jq -r '.key' upload-config.json)
+          COUNT=0
+          for f in output/*.webm; do
+            [ -f "$f" ] || continue
+            COUNT=$((COUNT+1))
+            echo "Uploading $f -> $ENDPOINT"
+            curl -sS --fail-with-body --retry 2 -X POST \
+              -H "X-Api-Key: ${DEST_KEY}" \
+              -F "video=@${f};type=video/webm" \
+              -F "title=آية في دقيقة" \
+              "$ENDPOINT" -o "output/host-response-${COUNT}.json"
+            cat "output/host-response-${COUNT}.json"
+          done
+          [ "$COUNT" -gt 0 ]
+
+      - name: Mark task done
+        if: env.NO_TASK == '0' && success()
+        env:
+          AYAH_API_KEY: ${{ secrets.AYAH_API_KEY }}
+        run: |
+          ID=$(jq -r '.id' task.json)
+          curl -sS --fail-with-body -X POST -H "X-API-Key: ${AYAH_API_KEY}" -H 'Content-Type: application/json' \
+            --data "{\"action\":\"finish\",\"task_id\":${ID},\"status\":\"done\",\"result\":{\"message\":\"uploaded\"}}" \
+            "https://khaled.elevatefollowers.com/worker-api.php"
+
+      - name: Mark task failed
+        if: env.NO_TASK == '0' && failure()
+        env:
+          AYAH_API_KEY: ${{ secrets.AYAH_API_KEY }}
+        run: |
+          ID=$(jq -r '.id // 0' task.json 2>/dev/null || echo 0)
+          [ "$ID" = "0" ] && exit 0
+          curl -sS -X POST -H "X-API-Key: ${AYAH_API_KEY}" -H 'Content-Type: application/json' \
+            --data "{\"action\":\"finish\",\"task_id\":${ID},\"status\":\"failed\",\"result\":{\"message\":\"GitHub Actions failed\"}}" \
+            "https://khaled.elevatefollowers.com/worker-api.php" || true
+
+      - name: Upload diagnostics
+        if: env.NO_TASK == '0' && always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-worker-output
+          path: |
+            output/
+            task.json
+          if-no-files-found: ignore
