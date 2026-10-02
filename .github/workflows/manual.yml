@@ -24,10 +24,8 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
 
-      - name: Test Batch Generator
+      - name: Open Batch Generator
         run: |
-          mkdir -p output
-
           node <<'EOF'
           const { chromium } = require('playwright');
 
@@ -40,28 +38,11 @@ jobs:
               ]
             });
 
-            const context = await browser.newContext({
+            const page = await browser.newPage({
               viewport: {
                 width: 1080,
                 height: 1920
               }
-            });
-
-            const page = await context.newPage();
-
-            page.on('console', msg => {
-              console.log(
-                '[BROWSER]',
-                msg.type(),
-                msg.text()
-              );
-            });
-
-            page.on('pageerror', error => {
-              console.error(
-                '[PAGE ERROR]',
-                error.message
-              );
             });
 
             console.log('Opening Ayah Fi Daqiqa...');
@@ -79,180 +60,91 @@ jobs:
             console.log('Site loaded.');
 
             /*
-             * Find ALL matching batch-generator buttons.
+             * Find the batch button regardless of
+             * whether CSS considers it visible.
              */
-            const matches = await page.locator('button').evaluateAll(
-              buttons => {
+            const batchButtons =
+              page.locator('button').filter({
+                hasText: 'مولد فيديوهات القرآن التلقائي'
+              });
 
-                return buttons
-                  .map((button, index) => {
-
-                    const text =
-                      (button.innerText || '')
-                        .trim();
-
-                    if (
-                      !text.includes(
-                        'مولد فيديوهات القرآن التلقائي'
-                      )
-                    ) {
-                      return null;
-                    }
-
-                    const rect =
-                      button.getBoundingClientRect();
-
-                    const style =
-                      window.getComputedStyle(button);
-
-                    return {
-                      index,
-                      text,
-                      display: style.display,
-                      visibility: style.visibility,
-                      opacity: style.opacity,
-                      width: rect.width,
-                      height: rect.height,
-                      top: rect.top,
-                      left: rect.left,
-                      disabled: button.disabled,
-                      ariaHidden:
-                        button.getAttribute(
-                          'aria-hidden'
-                        )
-                    };
-
-                  })
-                  .filter(Boolean);
-              }
-            );
+            const count =
+              await batchButtons.count();
 
             console.log(
-              'Matching batch buttons:',
-              JSON.stringify(matches, null, 2)
+              'Batch buttons found:',
+              count
             );
 
-            /*
-             * Find the FIRST actually visible button.
-             */
-            const visibleIndex =
-              matches.find(
-                item =>
-                  item.display !== 'none' &&
-                  item.visibility !== 'hidden' &&
-                  Number(item.opacity) > 0 &&
-                  item.width > 0 &&
-                  item.height > 0 &&
-                  item.ariaHidden !== 'true' &&
-                  !item.disabled
-              );
-
-            if (!visibleIndex) {
-
+            if (count === 0) {
               throw new Error(
-                'No visible batch-generator button found.'
+                'Batch generator button was not found.'
               );
             }
 
-            console.log(
-              'VISIBLE BATCH BUTTON:',
-              JSON.stringify(
-                visibleIndex,
-                null,
-                2
-              )
-            );
-
             /*
-             * Click directly through the DOM.
-             * This avoids Playwright's visibility/scroll
-             * checks on hidden duplicate elements.
+             * Direct DOM click.
+             * We deliberately do NOT use:
+             * click()
+             * scrollIntoView()
+             * visibility checks
              */
-            const clicked =
-              await page.locator('button').nth(
-                visibleIndex.index
-              ).evaluate(button => {
-
+            await batchButtons
+              .first()
+              .evaluate(button => {
                 button.click();
-
-                return true;
               });
 
             console.log(
-              'Batch button DOM click:',
-              clicked
+              'Batch button DOM click executed.'
             );
 
             /*
-             * Wait for modal initialization.
+             * Give the application time to
+             * open the generator.
              */
             await page.waitForTimeout(5000);
 
-            /*
-             * Check whether the batch dialog appeared.
-             */
-            const bodyText =
-              await page.locator('body')
-                .innerText();
+            const text =
+              await page.locator('body').innerText();
 
             console.log(
-              'Checking batch interface...'
+              'Output selector found:',
+              text.includes('صيغة الإخراج')
             );
 
             console.log(
-              'صيغة الإخراج:',
-              bodyText.includes('صيغة الإخراج')
+              'Create list button found:',
+              text.includes('إنشاء قائمة الإنتاج')
             );
 
             console.log(
-              'بدء الإنتاج:',
-              bodyText.includes('بدء الإنتاج')
-            );
-
-            console.log(
-              'إنشاء قائمة الإنتاج:',
-              bodyText.includes('إنشاء قائمة الإنتاج')
+              'Start production found:',
+              text.includes('بدء الإنتاج')
             );
 
             /*
-             * Inspect SELECT elements.
+             * Inspect selects AFTER opening.
              */
             const selects =
               await page.locator('select')
-                .evaluateAll(
-                  elements => {
-
-                    return elements.map(
-                      (select, index) => {
-
-                        const rect =
-                          select.getBoundingClientRect();
-
-                        const style =
-                          window.getComputedStyle(
-                            select
-                          );
-
-                        return {
-                          index,
-                          visible:
-                            style.display !== 'none' &&
-                            style.visibility !== 'hidden' &&
-                            rect.width > 0 &&
-                            rect.height > 0,
-                          options:
-                            [...select.options]
-                              .map(
-                                option =>
-                                  option.textContent
-                                    .trim()
-                              )
-                              .slice(0, 30)
-                        };
-
-                      }
-                    );
-                  }
+                .evaluateAll(elements =>
+                  elements.map((el, index) => ({
+                    index,
+                    visible:
+                      !!(
+                        el.offsetWidth ||
+                        el.offsetHeight ||
+                        el.getClientRects().length
+                      ),
+                    options:
+                      [...el.options]
+                        .map(o =>
+                          o.textContent.trim()
+                        )
+                        .filter(Boolean)
+                        .slice(0, 25)
+                  }))
                 );
 
             console.log(
@@ -267,17 +159,8 @@ jobs:
               )
             );
 
-            /*
-             * Save diagnostic screenshot.
-             */
-            await page.screenshot({
-              path:
-                'output/batch-generator.png',
-              fullPage: true
-            });
-
             console.log(
-              'BATCH GENERATOR TEST SUCCESS'
+              'BATCH GENERATOR TEST COMPLETE'
             );
 
             await browser.close();
@@ -293,9 +176,3 @@ jobs:
 
           });
           EOF
-
-      - name: Upload diagnostic
-        uses: actions/upload-artifact@v4
-        with:
-          name: batch-generator-diagnostic
-          path: output/
