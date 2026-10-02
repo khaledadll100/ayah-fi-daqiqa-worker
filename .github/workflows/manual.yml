@@ -1,16 +1,17 @@
-name: Test Batch Generator
+name: Test WebM Generation
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-batch:
+  generate-webm:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
+
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           package-manager-cache: false
@@ -24,10 +25,15 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
 
-      - name: Open Batch Generator
+      - name: Generate One WebM
         run: |
+
+          mkdir -p output
+
           node <<'EOF'
+
           const { chromium } = require('playwright');
+          const fs = require('fs');
 
           (async () => {
 
@@ -38,11 +44,30 @@ jobs:
               ]
             });
 
-            const page = await browser.newPage({
+            const context = await browser.newContext({
+              acceptDownloads: true,
+
               viewport: {
                 width: 1080,
                 height: 1920
               }
+            });
+
+            const page = await context.newPage();
+
+            page.on('console', msg => {
+              console.log(
+                '[BROWSER]',
+                msg.type(),
+                msg.text()
+              );
+            });
+
+            page.on('pageerror', error => {
+              console.error(
+                '[PAGE ERROR]',
+                error.message
+              );
             });
 
             console.log('Opening Ayah Fi Daqiqa...');
@@ -60,35 +85,32 @@ jobs:
             console.log('Site loaded.');
 
             /*
-             * Find the batch button regardless of
-             * whether CSS considers it visible.
+             * ==========================================
+             * 1. OPEN BATCH GENERATOR
+             * ==========================================
              */
-            const batchButtons =
-              page.locator('button').filter({
-                hasText: 'مولد فيديوهات القرآن التلقائي'
-              });
 
-            const count =
+            const batchButtons =
+              page.locator('button')
+                .filter({
+                  hasText:
+                    'مولد فيديوهات القرآن التلقائي'
+                });
+
+            const batchButtonCount =
               await batchButtons.count();
 
             console.log(
-              'Batch buttons found:',
-              count
+              'Batch buttons:',
+              batchButtonCount
             );
 
-            if (count === 0) {
+            if (batchButtonCount === 0) {
               throw new Error(
-                'Batch generator button was not found.'
+                'Batch generator button not found.'
               );
             }
 
-            /*
-             * Direct DOM click.
-             * We deliberately do NOT use:
-             * click()
-             * scrollIntoView()
-             * visibility checks
-             */
             await batchButtons
               .first()
               .evaluate(button => {
@@ -96,71 +118,478 @@ jobs:
               });
 
             console.log(
-              'Batch button DOM click executed.'
+              'Batch generator opened.'
             );
+
+            await page.waitForTimeout(4000);
 
             /*
-             * Give the application time to
-             * open the generator.
+             * ==========================================
+             * 2. GET THE 7 VISIBLE SELECTS
+             * ==========================================
              */
-            await page.waitForTimeout(5000);
 
-            const text =
-              await page.locator('body').innerText();
-
-            console.log(
-              'Output selector found:',
-              text.includes('صيغة الإخراج')
-            );
-
-            console.log(
-              'Create list button found:',
-              text.includes('إنشاء قائمة الإنتاج')
-            );
-
-            console.log(
-              'Start production found:',
-              text.includes('بدء الإنتاج')
-            );
-
-            /*
-             * Inspect selects AFTER opening.
-             */
             const selects =
-              await page.locator('select')
-                .evaluateAll(elements =>
-                  elements.map((el, index) => ({
-                    index,
-                    visible:
-                      !!(
-                        el.offsetWidth ||
-                        el.offsetHeight ||
-                        el.getClientRects().length
-                      ),
-                    options:
-                      [...el.options]
-                        .map(o =>
-                          o.textContent.trim()
-                        )
-                        .filter(Boolean)
-                        .slice(0, 25)
-                  }))
+              page.locator('select:visible');
+
+            const selectCount =
+              await selects.count();
+
+            console.log(
+              'Visible batch selects:',
+              selectCount
+            );
+
+            if (selectCount !== 7) {
+
+              throw new Error(
+                `Expected 7 visible batch selects, found ${selectCount}.`
+              );
+
+            }
+
+            /*
+             * Helper to select an option
+             * by partial text.
+             */
+
+            async function chooseOption(
+              index,
+              text
+            ) {
+
+              const select =
+                selects.nth(index);
+
+              const options =
+                await select
+                  .locator('option')
+                  .allTextContents();
+
+              const match =
+                options.find(option =>
+                  option
+                    .trim()
+                    .includes(text)
                 );
 
-            console.log(
-              'SELECT INFORMATION:'
+              if (!match) {
+
+                throw new Error(
+                  `Option "${text}" not found in select ${index}.`
+                );
+
+              }
+
+              console.log(
+                `SELECT ${index}:`,
+                match.trim()
+              );
+
+              await select.selectOption({
+                label: match.trim()
+              });
+
+              await page.waitForTimeout(500);
+            }
+
+            /*
+             * ==========================================
+             * 3. SURAH
+             * ==========================================
+             */
+
+            await chooseOption(
+              0,
+              'Al-Faatiha'
             );
 
+            /*
+             * ==========================================
+             * 4. RECITER
+             * ==========================================
+             */
+
+            await chooseOption(
+              1,
+              'محمد جبريل'
+            );
+
+            /*
+             * ==========================================
+             * 5. TRANSLATION
+             * ==========================================
+             */
+
+            await chooseOption(
+              2,
+              'بدون ترجمة'
+            );
+
+            /*
+             * ==========================================
+             * 6. TAFSIR
+             * ==========================================
+             */
+
+            await chooseOption(
+              3,
+              'بدون تفسير'
+            );
+
+            /*
+             * ==========================================
+             * 7. ONE AYAH PER VIDEO
+             * ==========================================
+             */
+
+            await chooseOption(
+              4,
+              'آية واحدة لكل فيديو'
+            );
+
+            /*
+             * ==========================================
+             * 8. WEBM
+             * ==========================================
+             */
+
+            await chooseOption(
+              5,
+              'WEBM'
+            );
+
+            /*
+             * ==========================================
+             * 9. CURRENT BACKGROUND
+             * ==========================================
+             */
+
+            await chooseOption(
+              6,
+              'استخدم الخلفية الحالية'
+            );
+
+            /*
+             * ==========================================
+             * 10. FIND BATCH CONTAINER
+             * ==========================================
+             */
+
+            const createButton =
+              page.locator('button:visible')
+                .filter({
+                  hasText:
+                    'إنشاء قائمة الإنتاج'
+                })
+                .first();
+
+            if (
+              await createButton.count() === 0
+            ) {
+
+              throw new Error(
+                'Create production list button not found.'
+              );
+
+            }
+
+            /*
+             * Walk upward until we find
+             * the batch container containing
+             * the seven select elements.
+             */
+
+            const batchRoot =
+              createButton.locator(
+                'xpath=ancestor::*[count(.//select) >= 7][1]'
+              );
+
+            /*
+             * ==========================================
+             * 11. START / END AYAH
+             * ==========================================
+             */
+
+            const numberInputs =
+              batchRoot.locator(
+                'input[type="number"]'
+              );
+
+            const numberCount =
+              await numberInputs.count();
+
             console.log(
-              JSON.stringify(
-                selects,
-                null,
-                2
+              'Batch number inputs:',
+              numberCount
+            );
+
+            if (numberCount < 2) {
+
+              throw new Error(
+                'Could not find the batch start/end Ayah inputs.'
+              );
+
+            }
+
+            /*
+             * The first two number fields in the
+             * batch dialog are:
+             *
+             * من آية
+             * إلى آية
+             */
+
+            await numberInputs
+              .nth(0)
+              .fill('1');
+
+            await numberInputs
+              .nth(1)
+              .fill('1');
+
+            console.log(
+              'Ayah range: 1 -> 1'
+            );
+
+            /*
+             * ==========================================
+             * 12. TURN OFF RANDOM BACKGROUND
+             * ==========================================
+             */
+
+            const randomButton =
+              batchRoot
+                .locator('button:visible')
+                .filter({
+                  hasText:
+                    'اختيار خلفية عشوائية مختلفة لكل فيديو'
+                })
+                .first();
+
+            if (
+              await randomButton.count() > 0
+            ) {
+
+              const randomText =
+                await randomButton.innerText();
+
+              console.log(
+                'Random background state:',
+                randomText
+              );
+
+              if (
+                randomText.includes('مفعّل')
+              ) {
+
+                await randomButton.click({
+                  force: true
+                });
+
+                console.log(
+                  'Random background disabled.'
+                );
+
+              }
+
+            }
+
+            /*
+             * ==========================================
+             * 13. SCREENSHOT BEFORE LIST
+             * ==========================================
+             */
+
+            await page.screenshot({
+              path:
+                'output/before-production.png',
+              fullPage: true
+            });
+
+            /*
+             * ==========================================
+             * 14. CREATE PRODUCTION LIST
+             * ==========================================
+             */
+
+            console.log(
+              'Creating production list...'
+            );
+
+            await createButton.click({
+              force: true
+            });
+
+            /*
+             * Give the application time
+             * to fetch the Ayah/audio metadata.
+             */
+
+            await page.waitForTimeout(15000);
+
+            const pageText =
+              await page.locator('body')
+                .innerText();
+
+            console.log(
+              'Production list text detected.'
+            );
+
+            if (
+              !pageText.includes(
+                'قائمة الإنتاج'
               )
+            ) {
+
+              throw new Error(
+                'Production list did not appear.'
+              );
+
+            }
+
+            /*
+             * ==========================================
+             * 15. VERIFY START BUTTON
+             * ==========================================
+             */
+
+            const startButton =
+              page.locator('button:visible')
+                .filter({
+                  hasText:
+                    'بدء الإنتاج'
+                })
+                .first();
+
+            if (
+              await startButton.count() === 0
+            ) {
+
+              throw new Error(
+                'Start production button not found.'
+              );
+
+            }
+
+            console.log(
+              'Start production button found.'
+            );
+
+            /*
+             * ==========================================
+             * 16. START PRODUCTION
+             * ==========================================
+             */
+
+            console.log(
+              'Starting production...'
+            );
+
+            /*
+             * Start listening BEFORE clicking.
+             * This is required to catch the browser
+             * download event.
+             */
+
+            const downloadPromise =
+              page.waitForEvent(
+                'download',
+                {
+                  timeout: 900000
+                }
+              );
+
+            await startButton.click({
+              force: true
+            });
+
+            console.log(
+              'Production started.'
+            );
+
+            /*
+             * ==========================================
+             * 17. WAIT FOR WEBM DOWNLOAD
+             * ==========================================
+             */
+
+            const download =
+              await downloadPromise;
+
+            console.log(
+              'Download detected.'
             );
 
             console.log(
-              'BATCH GENERATOR TEST COMPLETE'
+              'Suggested filename:',
+              download.suggestedFilename()
+            );
+
+            const outputPath =
+              'output/ayah-test.webm';
+
+            await download.saveAs(
+              outputPath
+            );
+
+            /*
+             * ==========================================
+             * 18. VALIDATE WEBM
+             * ==========================================
+             */
+
+            if (
+              !fs.existsSync(outputPath)
+            ) {
+
+              throw new Error(
+                'WebM file was not created.'
+              );
+
+            }
+
+            const stat =
+              fs.statSync(outputPath);
+
+            console.log(
+              'WEBM SIZE:',
+              stat.size,
+              'bytes'
+            );
+
+            if (
+              stat.size < 10000
+            ) {
+
+              throw new Error(
+                'WebM file is too small.'
+              );
+
+            }
+
+            /*
+             * ==========================================
+             * 19. FINAL SCREENSHOT
+             * ==========================================
+             */
+
+            await page.screenshot({
+              path:
+                'output/after-production.png',
+              fullPage: true
+            });
+
+            console.log(
+              '================================'
+            );
+
+            console.log(
+              'WEBM GENERATION SUCCESS'
+            );
+
+            console.log(
+              '================================'
             );
 
             await browser.close();
@@ -175,4 +604,12 @@ jobs:
             process.exit(1);
 
           });
+
           EOF
+
+      - name: Upload generated WebM
+        uses: actions/upload-artifact@v6
+        with:
+          name: ayah-first-webm
+          path: output/
+          if-no-files-found: error
