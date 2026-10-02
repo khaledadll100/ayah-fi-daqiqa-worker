@@ -1,18 +1,19 @@
-name: Test Ayah Site
+name: Test WebM Generation
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-site:
+  generate-webm:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
-          node-version: lts/*
+          node-version: 24
+          package-manager-cache: false
 
       - name: Install Playwright
         run: |
@@ -20,19 +21,28 @@ jobs:
           npm install playwright
 
       - name: Install Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Open Ayah Fi Daqiqa
         run: |
+          npx playwright install --with-deps chromium
+
+      - name: Generate One WebM
+        run: |
+          mkdir -p output
+
           node <<'EOF'
           const { chromium } = require('playwright');
+          const fs = require('fs');
 
           (async () => {
+
             const browser = await chromium.launch({
-              headless: true
+              headless: true,
+              args: [
+                '--autoplay-policy=no-user-gesture-required'
+              ]
             });
 
             const context = await browser.newContext({
+              acceptDownloads: true,
               viewport: {
                 width: 1080,
                 height: 1920
@@ -51,28 +61,196 @@ jobs:
 
             console.log('Opening Ayah Fi Daqiqa...');
 
-            await page.goto('https://khaled.elevatefollowers.com/', {
-              waitUntil: 'domcontentloaded',
-              timeout: 60000
-            });
+            await page.goto(
+              'https://khaled.elevatefollowers.com/',
+              {
+                waitUntil: 'domcontentloaded',
+                timeout: 60000
+              }
+            );
 
-            await page.waitForTimeout(10000);
+            await page.waitForTimeout(8000);
 
-            console.log('Page title:', await page.title());
+            console.log('Site loaded.');
 
+            /*
+             * Find visible selects.
+             */
+            const selects = page.locator('select:visible');
+            const selectCount = await selects.count();
+
+            console.log('Visible selects:', selectCount);
+
+            /*
+             * Select the first available Surah.
+             */
+            if (selectCount > 0) {
+              const firstSelect = selects.nth(0);
+
+              const options =
+                await firstSelect.locator('option').allTextContents();
+
+              console.log('Surah options:', options.slice(0, 10));
+
+              const valid = options.find(
+                x => x.trim() && !x.includes('اختر')
+              );
+
+              if (valid) {
+                await firstSelect.selectOption({
+                  label: valid.trim()
+                });
+
+                console.log('Selected Surah:', valid.trim());
+              }
+            }
+
+            /*
+             * Find Muhammad Jibril automatically.
+             */
+            let reciterFound = false;
+
+            for (let i = 0; i < selectCount; i++) {
+
+              const select = selects.nth(i);
+
+              const options =
+                await select.locator('option').allTextContents();
+
+              const match = options.find(
+                x => x.includes('محمد جبريل')
+              );
+
+              if (match) {
+
+                await select.selectOption({
+                  label: match.trim()
+                });
+
+                console.log(
+                  'Selected reciter:',
+                  match.trim()
+                );
+
+                reciterFound = true;
+                break;
+              }
+            }
+
+            if (!reciterFound) {
+              throw new Error(
+                'محمد جبريل was not found in the reciter list.'
+              );
+            }
+
+            /*
+             * The first two visible number inputs
+             * are the start/end Ayah fields.
+             */
+            const numberInputs =
+              page.locator('input[type="number"]:visible');
+
+            const numberCount =
+              await numberInputs.count();
+
+            console.log(
+              'Visible number inputs:',
+              numberCount
+            );
+
+            if (numberCount >= 2) {
+
+              await numberInputs.nth(0).fill('1');
+              await numberInputs.nth(1).fill('1');
+
+              console.log(
+                'Test range set to Ayah 1 → Ayah 1'
+              );
+            }
+
+            /*
+             * Fetch the Ayah.
+             */
+            await page.getByRole(
+              'button',
+              { name: 'جلب الآيات' }
+            ).click();
+
+            console.log('Fetching Ayah...');
+
+            await page.waitForTimeout(12000);
+
+            /*
+             * Screenshot before export.
+             */
             await page.screenshot({
-              path: 'ayah-site-test.png',
+              path: 'output/before-export.png',
               fullPage: true
             });
 
-            console.log('Ayah site loaded successfully.');
+            /*
+             * Start WebM download.
+             */
+            console.log('Starting WebM export...');
+
+            const downloadPromise =
+              page.waitForEvent('download', {
+                timeout: 300000
+              });
+
+            await page.getByRole(
+              'button',
+              { name: 'تحميل WEBM' }
+            ).click();
+
+            const download =
+              await downloadPromise;
+
+            const suggested =
+              download.suggestedFilename();
+
+            console.log(
+              'Downloaded filename:',
+              suggested
+            );
+
+            const outputPath =
+              'output/ayah-test.webm';
+
+            await download.saveAs(outputPath);
+
+            /*
+             * Validate the file.
+             */
+            const stat =
+              fs.statSync(outputPath);
+
+            console.log(
+              'WebM size:',
+              stat.size,
+              'bytes'
+            );
+
+            if (stat.size < 10000) {
+              throw new Error(
+                'WebM file is unexpectedly small.'
+              );
+            }
+
+            console.log(
+              'WEBM GENERATION SUCCESS'
+            );
 
             await browser.close();
-          })();
+
+          })().catch(error => {
+            console.error(error);
+            process.exit(1);
+          });
           EOF
 
-      - name: Upload screenshot
+      - name: Upload generated WebM
         uses: actions/upload-artifact@v4
         with:
-          name: ayah-site-test
-          path: ayah-site-test.png
+          name: ayah-test-webm
+          path: output/
