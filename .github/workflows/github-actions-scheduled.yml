@@ -72,6 +72,32 @@ jobs:
             if(kl) kl.checked=true;
           },{endpoint:p.destination_endpoint,key:p.destination_api_key});
 
+          // استعادة إعدادات الشعار والصوت المحفوظة مع المهمة.
+          await page.evaluate(async p=>{
+            if (typeof applyAudioSettings === 'function') applyAudioSettings({volume:Number(p.audio_volume ?? 1)});
+            if (typeof state !== 'undefined' && state.ambientAudio) {
+              state.ambientAudio.enabled=!!p.ambient_audio_enabled;
+              state.ambientAudio.url=p.ambient_audio_url || 'assets/audio/birds-ambience.wav';
+              state.ambientAudio.fileName=state.ambientAudio.url.split('/').pop() || 'صوت الخلفية';
+              state.ambientAudio.volume=Math.max(0,Math.min(1,Number(p.ambient_audio_volume ?? .18)));
+              if (typeof agSyncAmbientUi === 'function') agSyncAmbientUi();
+            }
+            if (p.logo_enabled && p.logo_url && typeof state !== 'undefined') {
+              const absolute=new URL(p.logo_url,location.href).href;
+              state.logoSettings.url=absolute;
+              const img=new Image(); img.crossOrigin='anonymous';
+              await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=reject;img.src=absolute;});
+              state.logoImage=img;
+              if (typeof els !== 'undefined' && els.logoImg) els.logoImg.src=absolute;
+              if (typeof els !== 'undefined' && els.logoBadge) els.logoBadge.style.backgroundImage=`url('${absolute}')`;
+              if (typeof applyLogoSettings === 'function') applyLogoSettings({enabled:true,size:Number(p.logo_size??12),opacity:Number(p.logo_opacity??90),position:p.logo_position||'tr'});
+              if (typeof applyLogoNeonSettings === 'function') applyLogoNeonSettings({color:p.logo_neon_color||'#21c3a0',intensity:Number(p.logo_neon_intensity??60),speed:Number(p.logo_neon_speed??4),animate:!!p.logo_neon_animate});
+              if (typeof refreshLogoVisibility === 'function') refreshLogoVisibility();
+            } else if (typeof applyLogoSettings === 'function') {
+              applyLogoSettings({enabled:false});
+            }
+          },p);
+
           const batch=page.locator('button').filter({hasText:'مولد فيديوهات القرآن التلقائي'}).first();
           await batch.evaluate(b=>b.click());
           await page.waitForTimeout(4000);
