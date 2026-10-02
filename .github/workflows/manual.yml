@@ -1,0 +1,46 @@
+name: Test Ayah Video Worker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Test Chromium
+        run: |
+          node <<'EOF'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const browser = await chromium.launch({
+              headless: true
+            });
+
+            const page = await browser.newPage();
+
+            await page.goto('https://example.com', {
+              waitUntil: 'domcontentloaded'
+            });
+
+            console.log('Browser title:', await page.title());
+            console.log('Chromium test: SUCCESS');
+
+            await browser.close();
+          })();
+          EOF
