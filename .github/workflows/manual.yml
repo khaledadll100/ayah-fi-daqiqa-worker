@@ -6,7 +6,7 @@ on:
 jobs:
   generate-webm:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Setup Node.js
@@ -37,7 +37,8 @@ jobs:
             const browser = await chromium.launch({
               headless: true,
               args: [
-                '--autoplay-policy=no-user-gesture-required'
+                '--autoplay-policy=no-user-gesture-required',
+                '--use-fake-ui-for-media-stream'
               ]
             });
 
@@ -52,11 +53,18 @@ jobs:
             const page = await context.newPage();
 
             page.on('console', msg => {
-              console.log('[BROWSER]', msg.type(), msg.text());
+              console.log(
+                '[BROWSER]',
+                msg.type(),
+                msg.text()
+              );
             });
 
             page.on('pageerror', error => {
-              console.error('[PAGE ERROR]', error.message);
+              console.error(
+                '[PAGE ERROR]',
+                error.message
+              );
             });
 
             console.log('Opening Ayah Fi Daqiqa...');
@@ -74,81 +82,169 @@ jobs:
             console.log('Site loaded.');
 
             /*
-             * Find visible selects.
+             * STEP 1
+             * Open the batch generator.
              */
-            const selects = page.locator('select:visible');
-            const selectCount = await selects.count();
+            const batchButton = page.getByRole(
+              'button',
+              {
+                name: /مولد فيديوهات القرآن التلقائي/
+              }
+            );
 
-            console.log('Visible selects:', selectCount);
+            await batchButton.click();
+
+            console.log(
+              'Batch generator opened.'
+            );
+
+            await page.waitForTimeout(3000);
 
             /*
-             * Select the first available Surah.
+             * STEP 2
+             * Inspect all selects AFTER opening
+             * the batch generator.
              */
-            if (selectCount > 0) {
-              const firstSelect = selects.nth(0);
+            const selectCount =
+              await page.locator('select').count();
 
-              const options =
-                await firstSelect.locator('option').allTextContents();
+            console.log(
+              'Total select elements:',
+              selectCount
+            );
 
-              console.log('Surah options:', options.slice(0, 10));
+            /*
+             * Helper:
+             * find a select containing an option
+             * with the requested text.
+             */
+            async function selectContaining(text) {
 
-              const valid = options.find(
-                x => x.trim() && !x.includes('اختر')
-              );
+              const selects =
+                page.locator('select');
 
-              if (valid) {
-                await firstSelect.selectOption({
-                  label: valid.trim()
-                });
+              const count =
+                await selects.count();
 
-                console.log('Selected Surah:', valid.trim());
+              for (let i = 0; i < count; i++) {
+
+                const select =
+                  selects.nth(i);
+
+                const options =
+                  await select.locator(
+                    'option'
+                  ).allTextContents();
+
+                const match =
+                  options.find(option =>
+                    option
+                      .trim()
+                      .includes(text)
+                  );
+
+                if (match) {
+
+                  console.log(
+                    `Found "${text}" in select #${i}:`,
+                    match.trim()
+                  );
+
+                  await select.evaluate(
+                    (el, wanted) => {
+
+                      const option =
+                        [...el.options].find(
+                          o =>
+                            o.textContent
+                              .trim()
+                              .includes(wanted)
+                        );
+
+                      if (!option) {
+                        throw new Error(
+                          `Option not found: ${wanted}`
+                        );
+                      }
+
+                      el.value = option.value;
+
+                      el.dispatchEvent(
+                        new Event(
+                          'input',
+                          { bubbles: true }
+                        )
+                      );
+
+                      el.dispatchEvent(
+                        new Event(
+                          'change',
+                          { bubbles: true }
+                        )
+                      );
+                    },
+                    text
+                  );
+
+                  await page.waitForTimeout(500);
+
+                  return true;
+                }
               }
+
+              return false;
             }
 
             /*
-             * Find Muhammad Jibril automatically.
+             * STEP 3
+             * Select Al-Fatihah.
              */
-            let reciterFound = false;
+            const surahOK =
+              await selectContaining('الفاتحة');
 
-            for (let i = 0; i < selectCount; i++) {
-
-              const select = selects.nth(i);
-
-              const options =
-                await select.locator('option').allTextContents();
-
-              const match = options.find(
-                x => x.includes('محمد جبريل')
-              );
-
-              if (match) {
-
-                await select.selectOption({
-                  label: match.trim()
-                });
-
-                console.log(
-                  'Selected reciter:',
-                  match.trim()
-                );
-
-                reciterFound = true;
-                break;
-              }
-            }
-
-            if (!reciterFound) {
+            if (!surahOK) {
               throw new Error(
-                'محمد جبريل was not found in the reciter list.'
+                'لم يتم العثور على سورة الفاتحة داخل المولد الدفعي.'
               );
             }
 
             /*
-             * The first two visible number inputs
-             * are the start/end Ayah fields.
+             * STEP 4
+             * Select Muhammad Jibril.
+             */
+            const reciterOK =
+              await selectContaining('محمد جبريل');
+
+            if (!reciterOK) {
+              throw new Error(
+                'لم يتم العثور على محمد جبريل بعد فتح المولد الدفعي.'
+              );
+            }
+
+            /*
+             * STEP 5
+             * Try to select WEBM.
+             */
+            const webmOK =
+              await selectContaining('WEBM');
+
+            if (!webmOK) {
+              console.log(
+                'WEBM option was not found by text.'
+              );
+              console.log(
+                'The export selector may use another label.'
+              );
+            }
+
+            /*
+             * STEP 6
+             * Find visible number inputs.
              */
             const numberInputs =
-              page.locator('input[type="number"]:visible');
+              page.locator(
+                'input[type="number"]:visible'
+              );
 
             const numberCount =
               await numberInputs.count();
@@ -158,82 +254,129 @@ jobs:
               numberCount
             );
 
+            /*
+             * The batch dialog range fields
+             * are expected to be the last two
+             * visible number inputs.
+             */
             if (numberCount >= 2) {
 
-              await numberInputs.nth(0).fill('1');
-              await numberInputs.nth(1).fill('1');
+              await numberInputs
+                .nth(numberCount - 2)
+                .fill('1');
+
+              await numberInputs
+                .nth(numberCount - 1)
+                .fill('1');
 
               console.log(
-                'Test range set to Ayah 1 → Ayah 1'
+                'Range set to Ayah 1 → Ayah 1.'
+              );
+
+            } else {
+
+              throw new Error(
+                'لم يتم العثور على حقلي بداية ونهاية الآيات.'
               );
             }
 
             /*
-             * Fetch the Ayah.
-             */
-            await page.getByRole(
-              'button',
-              { name: 'جلب الآيات' }
-            ).click();
-
-            console.log('Fetching Ayah...');
-
-            await page.waitForTimeout(12000);
-
-            /*
-             * Screenshot before export.
+             * Screenshot before production.
              */
             await page.screenshot({
-              path: 'output/before-export.png',
+              path:
+                'output/batch-before-production.png',
               fullPage: true
             });
 
             /*
-             * Start WebM download.
+             * STEP 7
+             * Create production list.
              */
-            console.log('Starting WebM export...');
+            const createList =
+              page.getByRole(
+                'button',
+                {
+                  name: 'إنشاء قائمة الإنتاج'
+                }
+              );
+
+            await createList.click();
+
+            console.log(
+              'Production list requested.'
+            );
+
+            await page.waitForTimeout(15000);
+
+            /*
+             * STEP 8
+             * Confirm a production item exists.
+             */
+            const bodyText =
+              await page.locator('body').innerText();
+
+            console.log(
+              'Production list text checked.'
+            );
+
+            if (
+              !bodyText.includes('قائمة الإنتاج')
+            ) {
+              throw new Error(
+                'قائمة الإنتاج لم تظهر.'
+              );
+            }
+
+            /*
+             * STEP 9
+             * Start production and wait for download.
+             */
+            console.log(
+              'Starting production...'
+            );
 
             const downloadPromise =
-              page.waitForEvent('download', {
-                timeout: 300000
-              });
+              page.waitForEvent(
+                'download',
+                {
+                  timeout: 600000
+                }
+              );
 
             await page.getByRole(
               'button',
-              { name: 'تحميل WEBM' }
+              {
+                name: /بدء الإنتاج/
+              }
             ).click();
 
             const download =
               await downloadPromise;
 
-            const suggested =
-              download.suggestedFilename();
-
-            console.log(
-              'Downloaded filename:',
-              suggested
-            );
-
             const outputPath =
               'output/ayah-test.webm';
 
-            await download.saveAs(outputPath);
+            await download.saveAs(
+              outputPath
+            );
 
             /*
-             * Validate the file.
+             * STEP 10
+             * Validate.
              */
             const stat =
               fs.statSync(outputPath);
 
             console.log(
-              'WebM size:',
+              'Generated WebM:',
               stat.size,
               'bytes'
             );
 
             if (stat.size < 10000) {
               throw new Error(
-                'WebM file is unexpectedly small.'
+                'ملف WebM صغير بشكل غير طبيعي.'
               );
             }
 
@@ -241,15 +384,27 @@ jobs:
               'WEBM GENERATION SUCCESS'
             );
 
+            await page.screenshot({
+              path:
+                'output/after-production.png',
+              fullPage: true
+            });
+
             await browser.close();
 
           })().catch(error => {
-            console.error(error);
+
+            console.error(
+              'FINAL ERROR:',
+              error
+            );
+
             process.exit(1);
+
           });
           EOF
 
-      - name: Upload generated WebM
+      - name: Upload generated files
         uses: actions/upload-artifact@v4
         with:
           name: ayah-test-webm
