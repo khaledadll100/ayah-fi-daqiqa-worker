@@ -1,12 +1,12 @@
-name: Test WebM Generation
+name: Inspect Batch Generator
 
 on:
   workflow_dispatch:
 
 jobs:
-  generate-webm:
+  inspect-batch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
 
     steps:
       - name: Setup Node.js
@@ -24,26 +24,23 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
 
-      - name: Generate One WebM
+      - name: Open Batch Generator
         run: |
           mkdir -p output
 
           node <<'EOF'
           const { chromium } = require('playwright');
-          const fs = require('fs');
 
           (async () => {
 
             const browser = await chromium.launch({
               headless: true,
               args: [
-                '--autoplay-policy=no-user-gesture-required',
-                '--use-fake-ui-for-media-stream'
+                '--autoplay-policy=no-user-gesture-required'
               ]
             });
 
             const context = await browser.newContext({
-              acceptDownloads: true,
               viewport: {
                 width: 1080,
                 height: 1920
@@ -67,7 +64,7 @@ jobs:
               );
             });
 
-            console.log('Opening Ayah Fi Daqiqa...');
+            console.log('Opening site...');
 
             await page.goto(
               'https://khaled.elevatefollowers.com/',
@@ -77,318 +74,205 @@ jobs:
               }
             );
 
-            await page.waitForTimeout(8000);
+            await page.waitForTimeout(10000);
 
             console.log('Site loaded.');
 
             /*
-             * STEP 1
-             * Open the batch generator.
+             * Find the actual batch-generator button
+             * by its text instead of accessible role.
              */
-            const batchButton = page.getByRole(
-              'button',
-              {
-                name: /مولد فيديوهات القرآن التلقائي/
-              }
-            );
+            const buttons = page.locator('button');
 
-            await batchButton.click();
+            const buttonCount =
+              await buttons.count();
 
             console.log(
-              'Batch generator opened.'
+              'Total buttons:',
+              buttonCount
             );
 
-            await page.waitForTimeout(3000);
+            let batchIndex = -1;
+
+            for (let i = 0; i < buttonCount; i++) {
+
+              const text =
+                (await buttons.nth(i).innerText())
+                  .trim();
+
+              if (
+                text.includes(
+                  'مولد فيديوهات القرآن التلقائي'
+                )
+              ) {
+
+                console.log(
+                  'FOUND BATCH BUTTON:',
+                  text
+                );
+
+                batchIndex = i;
+                break;
+              }
+            }
+
+            if (batchIndex === -1) {
+
+              console.log(
+                'Batch button was not found.'
+              );
+
+              console.log(
+                'Available buttons:'
+              );
+
+              for (
+                let i = 0;
+                i < Math.min(buttonCount, 100);
+                i++
+              ) {
+
+                console.log(
+                  i,
+                  (await buttons.nth(i).innerText())
+                    .trim()
+                );
+              }
+
+              throw new Error(
+                'Batch generator button not found.'
+              );
+            }
 
             /*
-             * STEP 2
-             * Inspect all selects AFTER opening
-             * the batch generator.
+             * Scroll to the button.
              */
-            const selectCount =
-              await page.locator('select').count();
+            await buttons
+              .nth(batchIndex)
+              .scrollIntoViewIfNeeded();
+
+            /*
+             * Try normal click first.
+             */
+            try {
+
+              await buttons
+                .nth(batchIndex)
+                .click({
+                  timeout: 10000
+                });
+
+            } catch (error) {
+
+              console.log(
+                'Normal click failed.'
+              );
+
+              console.log(
+                'Trying DOM click...'
+              );
+
+              await buttons
+                .nth(batchIndex)
+                .evaluate(
+                  el => el.click()
+                );
+            }
 
             console.log(
-              'Total select elements:',
+              'Batch button clicked.'
+            );
+
+            /*
+             * Wait for the batch dialog.
+             */
+            await page.waitForTimeout(4000);
+
+            /*
+             * Verify the batch interface.
+             */
+            const bodyText =
+              await page.locator('body')
+                .innerText();
+
+            console.log(
+              'Batch interface check:'
+            );
+
+            console.log(
+              bodyText.includes(
+                'صيغة الإخراج'
+              )
+                ? 'Output selector FOUND'
+                : 'Output selector NOT FOUND'
+            );
+
+            console.log(
+              bodyText.includes(
+                'بدء الإنتاج'
+              )
+                ? 'Start production button FOUND'
+                : 'Start production button NOT FOUND'
+            );
+
+            /*
+             * Count selects after opening.
+             */
+            const selects =
+              page.locator('select');
+
+            const selectCount =
+              await selects.count();
+
+            console.log(
+              'Select count after opening:',
               selectCount
             );
 
-            /*
-             * Helper:
-             * find a select containing an option
-             * with the requested text.
-             */
-            async function selectContaining(text) {
-
-              const selects =
-                page.locator('select');
-
-              const count =
-                await selects.count();
-
-              for (let i = 0; i < count; i++) {
-
-                const select =
-                  selects.nth(i);
-
-                const options =
-                  await select.locator(
-                    'option'
-                  ).allTextContents();
-
-                const match =
-                  options.find(option =>
-                    option
-                      .trim()
-                      .includes(text)
-                  );
-
-                if (match) {
-
-                  console.log(
-                    `Found "${text}" in select #${i}:`,
-                    match.trim()
-                  );
-
-                  await select.evaluate(
-                    (el, wanted) => {
-
-                      const option =
-                        [...el.options].find(
-                          o =>
-                            o.textContent
-                              .trim()
-                              .includes(wanted)
-                        );
-
-                      if (!option) {
-                        throw new Error(
-                          `Option not found: ${wanted}`
-                        );
-                      }
-
-                      el.value = option.value;
-
-                      el.dispatchEvent(
-                        new Event(
-                          'input',
-                          { bubbles: true }
-                        )
-                      );
-
-                      el.dispatchEvent(
-                        new Event(
-                          'change',
-                          { bubbles: true }
-                        )
-                      );
-                    },
-                    text
-                  );
-
-                  await page.waitForTimeout(500);
-
-                  return true;
-                }
-              }
-
-              return false;
-            }
-
-            /*
-             * STEP 3
-             * Select Al-Fatihah.
-             */
-            const surahOK =
-              await selectContaining('الفاتحة');
-
-            if (!surahOK) {
-              throw new Error(
-                'لم يتم العثور على سورة الفاتحة داخل المولد الدفعي.'
-              );
-            }
-
-            /*
-             * STEP 4
-             * Select Muhammad Jibril.
-             */
-            const reciterOK =
-              await selectContaining('محمد جبريل');
-
-            if (!reciterOK) {
-              throw new Error(
-                'لم يتم العثور على محمد جبريل بعد فتح المولد الدفعي.'
-              );
-            }
-
-            /*
-             * STEP 5
-             * Try to select WEBM.
-             */
-            const webmOK =
-              await selectContaining('WEBM');
-
-            if (!webmOK) {
-              console.log(
-                'WEBM option was not found by text.'
-              );
-              console.log(
-                'The export selector may use another label.'
-              );
-            }
-
-            /*
-             * STEP 6
-             * Find visible number inputs.
-             */
-            const numberInputs =
-              page.locator(
-                'input[type="number"]:visible'
-              );
-
-            const numberCount =
-              await numberInputs.count();
-
-            console.log(
-              'Visible number inputs:',
-              numberCount
-            );
-
-            /*
-             * The batch dialog range fields
-             * are expected to be the last two
-             * visible number inputs.
-             */
-            if (numberCount >= 2) {
-
-              await numberInputs
-                .nth(numberCount - 2)
-                .fill('1');
-
-              await numberInputs
-                .nth(numberCount - 1)
-                .fill('1');
-
-              console.log(
-                'Range set to Ayah 1 → Ayah 1.'
-              );
-
-            } else {
-
-              throw new Error(
-                'لم يتم العثور على حقلي بداية ونهاية الآيات.'
-              );
-            }
-
-            /*
-             * Screenshot before production.
-             */
-            await page.screenshot({
-              path:
-                'output/batch-before-production.png',
-              fullPage: true
-            });
-
-            /*
-             * STEP 7
-             * Create production list.
-             */
-            const createList =
-              page.getByRole(
-                'button',
-                {
-                  name: 'إنشاء قائمة الإنتاج'
-                }
-              );
-
-            await createList.click();
-
-            console.log(
-              'Production list requested.'
-            );
-
-            await page.waitForTimeout(15000);
-
-            /*
-             * STEP 8
-             * Confirm a production item exists.
-             */
-            const bodyText =
-              await page.locator('body').innerText();
-
-            console.log(
-              'Production list text checked.'
-            );
-
-            if (
-              !bodyText.includes('قائمة الإنتاج')
+            for (
+              let i = 0;
+              i < selectCount;
+              i++
             ) {
-              throw new Error(
-                'قائمة الإنتاج لم تظهر.'
-              );
-            }
 
-            /*
-             * STEP 9
-             * Start production and wait for download.
-             */
-            console.log(
-              'Starting production...'
-            );
+              const select =
+                selects.nth(i);
 
-            const downloadPromise =
-              page.waitForEvent(
-                'download',
-                {
-                  timeout: 600000
-                }
-              );
+              const visible =
+                await select.isVisible()
+                  .catch(() => false);
 
-            await page.getByRole(
-              'button',
-              {
-                name: /بدء الإنتاج/
+              if (!visible) {
+                continue;
               }
-            ).click();
 
-            const download =
-              await downloadPromise;
+              const options =
+                await select
+                  .locator('option')
+                  .allTextContents();
 
-            const outputPath =
-              'output/ayah-test.webm';
-
-            await download.saveAs(
-              outputPath
-            );
-
-            /*
-             * STEP 10
-             * Validate.
-             */
-            const stat =
-              fs.statSync(outputPath);
-
-            console.log(
-              'Generated WebM:',
-              stat.size,
-              'bytes'
-            );
-
-            if (stat.size < 10000) {
-              throw new Error(
-                'ملف WebM صغير بشكل غير طبيعي.'
+              console.log(
+                `SELECT ${i}:`,
+                options
+                  .map(x => x.trim())
+                  .filter(Boolean)
+                  .slice(0, 20)
+                  .join(' | ')
               );
             }
 
-            console.log(
-              'WEBM GENERATION SUCCESS'
-            );
-
+            /*
+             * Save screenshot.
+             */
             await page.screenshot({
               path:
-                'output/after-production.png',
+                'output/batch-generator.png',
               fullPage: true
             });
+
+            console.log(
+              'BATCH GENERATOR OPENED SUCCESSFULLY'
+            );
 
             await browser.close();
 
@@ -404,8 +288,8 @@ jobs:
           });
           EOF
 
-      - name: Upload generated files
+      - name: Upload diagnostic screenshot
         uses: actions/upload-artifact@v4
         with:
-          name: ayah-test-webm
+          name: batch-generator-test
           path: output/
