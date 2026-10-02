@@ -48,7 +48,7 @@ jobs:
         run: |
           mkdir -p output
           node <<'EOF'
-          const { chromium } = require('playwright');
+          const { chromium } = await import('playwright');
           const fs = require('fs');
           const task = JSON.parse(fs.readFileSync('task.json','utf8'));
           const p = task.payload;
