@@ -1,10 +1,10 @@
-name: Test Ayah Video Worker
+name: Test Ayah Site
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-browser:
+  test-site:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -22,7 +22,7 @@ jobs:
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Test Chromium
+      - name: Open Ayah Fi Daqiqa
         run: |
           node <<'EOF'
           const { chromium } = require('playwright');
@@ -32,15 +32,47 @@ jobs:
               headless: true
             });
 
-            const page = await browser.newPage();
-
-            await page.goto('https://example.com', {
-              waitUntil: 'domcontentloaded'
+            const context = await browser.newContext({
+              viewport: {
+                width: 1080,
+                height: 1920
+              }
             });
 
-            console.log('Browser title:', await page.title());
-            console.log('Chromium test: SUCCESS');
+            const page = await context.newPage();
+
+            page.on('console', msg => {
+              console.log('[BROWSER]', msg.type(), msg.text());
+            });
+
+            page.on('pageerror', error => {
+              console.error('[PAGE ERROR]', error.message);
+            });
+
+            console.log('Opening Ayah Fi Daqiqa...');
+
+            await page.goto('https://khaled.elevatefollowers.com/', {
+              waitUntil: 'domcontentloaded',
+              timeout: 60000
+            });
+
+            await page.waitForTimeout(10000);
+
+            console.log('Page title:', await page.title());
+
+            await page.screenshot({
+              path: 'ayah-site-test.png',
+              fullPage: true
+            });
+
+            console.log('Ayah site loaded successfully.');
 
             await browser.close();
           })();
           EOF
+
+      - name: Upload screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: ayah-site-test
+          path: ayah-site-test.png
