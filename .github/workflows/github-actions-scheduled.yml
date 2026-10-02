@@ -58,6 +58,20 @@ jobs:
           page.on('console',m=>console.log('[BROWSER]',m.type(),m.text()));
           await page.goto('https://khaled.elevatefollowers.com/',{waitUntil:'domcontentloaded',timeout:60000});
           await page.waitForTimeout(10000);
+
+          // استخدم نفس مسار الرفع الأصلي داخل الموقع حتى يصل العنوان والكابشن
+          // والكلمات الدلالية والصورة المصغرة، بدل رفع الملف مرة ثانية من GitHub.
+          await page.evaluate(({endpoint,key})=>{
+            const ep=document.getElementById('hostEndpoint');
+            const ak=document.getElementById('hostApiKey');
+            const au=document.getElementById('hostAutoUpload');
+            const kl=document.getElementById('hostKeepLocal');
+            if(ep) ep.value=endpoint || '';
+            if(ak) ak.value=key || '';
+            if(au) au.checked=true;
+            if(kl) kl.checked=true;
+          },{endpoint:p.destination_endpoint,key:p.destination_api_key});
+
           const batch=page.locator('button').filter({hasText:'مولد فيديوهات القرآن التلقائي'}).first();
           await batch.evaluate(b=>b.click());
           await page.waitForTimeout(4000);
@@ -93,39 +107,42 @@ jobs:
           await page.waitForTimeout(12000);
           const expected=Math.ceil((Number(p.to_ayah)-Number(p.from_ayah)+1)/Number(p.verses_per_video||1));
           let saved=0;
-          page.on('download',async d=>{
-            saved++;
-            const path=`output/video-${String(saved).padStart(3,'0')}.webm`;
-            await d.saveAs(path);
-            console.log('Saved',path);
+          let uploaded=0;
+          let uploadError='';
+          const downloadPromises=[];
+          page.on('download',d=>{
+            const n=++saved;
+            const path=`output/video-${String(n).padStart(3,'0')}.webm`;
+            const promise=d.saveAs(path).then(()=>console.log('Saved',path));
+            downloadPromises.push(promise);
+          });
+          page.on('response',async resp=>{
+            try{
+              if(resp.request().method()==='POST' && resp.url()===String(p.destination_endpoint)){
+                const body=await resp.json().catch(()=>null);
+                if(resp.ok() && body && body.ok){
+                  uploaded++;
+                  console.log('Publishing upload accepted',uploaded);
+                }else{
+                  uploadError=(body && (body.error||body.message)) || `HTTP ${resp.status()}`;
+                }
+              }
+            }catch(e){
+              uploadError=e?.message || String(e);
+            }
           });
           const start=page.locator('button:visible').filter({hasText:'بدء الإنتاج'}).first();
           await start.click({force:true});
           const deadline=Date.now()+35*60*1000;
-          while(saved<expected && Date.now()<deadline){ await page.waitForTimeout(2000); }
+          while((saved<expected || uploaded<expected) && !uploadError && Date.now()<deadline){
+            await page.waitForTimeout(2000);
+          }
+          if(uploadError) throw new Error(`Publishing upload failed: ${uploadError}`);
           if(saved<expected) throw new Error(`Expected ${expected} downloads, got ${saved}`);
-          fs.writeFileSync('upload-config.json',JSON.stringify({task_id:task.id,endpoint:p.destination_endpoint,key:p.destination_api_key},null,2));
+          if(uploaded<expected) throw new Error(`Expected ${expected} publishing uploads, got ${uploaded}`);
+          await Promise.all(downloadPromises);
           await browser.close();
           EOF
-
-      - name: Upload videos to selected hosting
-        if: env.NO_TASK == '0'
-        run: |
-          ENDPOINT=$(jq -r '.endpoint' upload-config.json)
-          DEST_KEY=$(jq -r '.key' upload-config.json)
-          COUNT=0
-          for f in output/*.webm; do
-            [ -f "$f" ] || continue
-            COUNT=$((COUNT+1))
-            echo "Uploading $f -> $ENDPOINT"
-            curl -sS --fail-with-body --retry 2 -X POST \
-              -H "X-Api-Key: ${DEST_KEY}" \
-              -F "video=@${f};type=video/webm" \
-              -F "title=آية في دقيقة" \
-              "$ENDPOINT" -o "output/host-response-${COUNT}.json"
-            cat "output/host-response-${COUNT}.json"
-          done
-          [ "$COUNT" -gt 0 ]
 
       - name: Mark task done
         if: env.NO_TASK == '0' && success()
@@ -134,7 +151,7 @@ jobs:
         run: |
           ID=$(jq -r '.id' task.json)
           curl -sS --fail-with-body -X POST -H "X-API-Key: ${AYAH_API_KEY}" -H 'Content-Type: application/json' \
-            --data "{\"action\":\"finish\",\"task_id\":${ID},\"status\":\"done\",\"result\":{\"message\":\"uploaded\"}}" \
+            --data "{\"action\":\"finish\",\"task_id\":${ID},\"status\":\"done\",\"result\":{\"message\":\"generated and uploaded by website with metadata\"}}" \
             "https://khaled.elevatefollowers.com/worker-api.php"
 
       - name: Mark task failed
