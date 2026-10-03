@@ -12,7 +12,7 @@ concurrency:
 jobs:
   worker:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - name: Claim due task
         env:
@@ -159,7 +159,10 @@ jobs:
           });
           const start=page.locator('button:visible').filter({hasText:'بدء الإنتاج'}).first();
           await start.click({force:true});
-          const deadline=Date.now()+35*60*1000;
+          // Large surahs can legitimately take well over 35 minutes. Allow ~90 sec per video + 10 min overhead, with a 35 min minimum.
+          const allowedMs=Math.max(35*60*1000, expected*90*1000 + 10*60*1000);
+          const deadline=Date.now()+allowedMs;
+          console.log(`Expected ${expected} publishing uploads; generation deadline ${Math.round(allowedMs/60000)} minutes`);
           while((saved<expected || uploaded<expected) && !uploadError && Date.now()<deadline){
             await page.waitForTimeout(2000);
           }
