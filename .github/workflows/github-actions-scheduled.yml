@@ -47,7 +47,7 @@ jobs:
         if: env.NO_TASK == '0'
         run: |
           mkdir -p output
-          node <<'EOF'
+          node 2> >(tee worker-error.log >&2) <<'EOF'
           const { chromium } = await import('playwright');
           const fs = await import('node:fs');
           const task = JSON.parse(fs.readFileSync('task.json','utf8'));
@@ -191,8 +191,12 @@ jobs:
         run: |
           ID=$(jq -r '.id // 0' task.json 2>/dev/null || echo 0)
           [ "$ID" = "0" ] && exit 0
+          DETAIL=$(grep -E 'Error:|TimeoutError:|SyntaxError:|Failed to|Expected ' worker-error.log 2>/dev/null | tail -n 1 | cut -c1-250 || true)
+          [ -n "$DETAIL" ] || DETAIL="GitHub Actions failed; inspect workflow logs"
+          jq -n --argjson task_id "$ID" --arg message "$DETAIL" \
+            '{action:"finish",task_id:$task_id,status:"failed",result:{message:$message}}' > failure-result.json
           curl -sS -X POST -H "X-API-Key: ${AYAH_API_KEY}" -H 'Content-Type: application/json' \
-            --data "{\"action\":\"finish\",\"task_id\":${ID},\"status\":\"failed\",\"result\":{\"message\":\"GitHub Actions failed\"}}" \
+            --data-binary @failure-result.json \
             "https://khaled.elevatefollowers.com/worker-api.php" || true
 
       - name: Upload diagnostics
