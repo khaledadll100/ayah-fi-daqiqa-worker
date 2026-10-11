@@ -101,32 +101,33 @@ jobs:
           const batch=page.locator('button').filter({hasText:'مولد فيديوهات القرآن التلقائي'}).first();
           await batch.evaluate(b=>b.click());
           await page.waitForTimeout(4000);
-          const s=page.locator('select:visible');
-          if(await s.count()!==7) throw new Error('Expected 7 visible batch selects');
-          async function pick(i,text){
-            const opts=await s.nth(i).locator('option').allTextContents();
-            const m=opts.find(x=>x.trim().includes(String(text).trim()));
-            if(!m) throw new Error(`Option not found: ${text}`);
-            await s.nth(i).selectOption({label:m.trim()}); await page.waitForTimeout(300);
+          // Stable field IDs: adding new design selectors must not break the worker.
+          async function pick(id,text){
+            const select=page.locator('#'+id);
+            await select.waitFor({state:'visible',timeout:15000});
+            const options=await select.locator('option').allTextContents();
+            const match=options.find(x=>x.trim().includes(String(text).trim()));
+            if(!match) throw new Error(`Option not found for #${id}: ${text}; available: ${options.join(' | ')}`);
+            await select.selectOption({label:match.trim()});
+            await page.waitForTimeout(300);
           }
-          // السورة تُحفظ كرقم value، لذلك نختار بالقيمة مباشرة.
-          await s.nth(0).selectOption(String(p.surah));
-          await pick(1,p.reciter);
-          await pick(2,p.translation||'بدون ترجمة');
-          await pick(3,p.tafsir||'بدون تفسير');
-          const vpvLabel = Number(p.verses_per_video)===1?'آية واحدة':Number(p.verses_per_video)===2?'آيتان':`${p.verses_per_video} آيات`;
-          await pick(4,vpvLabel);
-          await pick(5,'WEBM');
-          if(!p.random_background && p.background_label && !p.background_label.includes('استخدم الخلفية الحالية')) await pick(6,p.background_label.split('·')[0].trim());
-          const create=page.locator('button:visible').filter({hasText:'إنشاء قائمة الإنتاج'}).first();
-          const root=create.locator('xpath=ancestor::*[count(.//select) >= 7][1]');
-          const nums=root.locator('input[type="number"]');
-          await nums.nth(0).fill(String(p.from_ayah));
-          await nums.nth(1).fill(String(p.to_ayah));
-          const randomBtn=root.locator('button:visible').filter({hasText:'اختيار خلفية عشوائية مختلفة لكل فيديو'}).first();
-          if(await randomBtn.count()){
-            const txt=await randomBtn.innerText();
-            const enabled=txt.includes('مفعّل');
+          await page.locator('#agSurah').selectOption(String(p.surah));
+          await pick('agReciter',p.reciter);
+          await pick('agTranslationSelect',p.translation||'بدون ترجمة');
+          await pick('agTafsirSelect',p.tafsir||'بدون تفسير');
+          const vpvLabel=Number(p.verses_per_video)===1?'آية واحدة':Number(p.verses_per_video)===2?'آيتان':`${p.verses_per_video} آيات`;
+          await pick('agVpv',vpvLabel);
+          await page.locator('#agFormat').selectOption('webm');
+          if(!p.random_background && p.background_label && !p.background_label.includes('استخدم الخلفية الحالية'))
+            await pick('agBackgroundSelect',p.background_label.split('·')[0].trim());
+          const create=page.locator('#agBuildQueue');
+          await create.waitFor({state:'visible',timeout:15000});
+          await page.locator('#agFrom').fill(String(p.from_ayah));
+          await page.locator('#agTo').fill(String(p.to_ayah));
+          const randomBtn=page.locator('#agRandomBgBtn');
+          const randomToggle=page.locator('#agRandomBg');
+          if(await randomBtn.count() && await randomToggle.count()){
+            const enabled=await randomToggle.isChecked();
             if(Boolean(p.random_background)!==enabled) await randomBtn.click({force:true});
           }
           await create.click({force:true});
