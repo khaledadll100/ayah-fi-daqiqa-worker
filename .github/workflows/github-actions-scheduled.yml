@@ -134,6 +134,17 @@ jobs:
               random.dispatchEvent(new Event('change',{bubbles:true}));
             }
           },p);
+          // Restore visual effects saved by the generator, before building the queue.
+          await page.evaluate(payload=>{
+            const enabled=document.getElementById('agVisualFxEnabled');
+            const style=document.getElementById('agVisualFxStyle');
+            const random=document.getElementById('agVisualFxRandom');
+            const intensity=document.getElementById('agVisualFxIntensity');
+            if(enabled) enabled.checked=payload.visual_fx_enabled !== false;
+            if(style && payload.visual_fx_style) style.value=String(payload.visual_fx_style);
+            if(random) random.checked=payload.visual_fx_random !== false;
+            if(intensity) intensity.value=String(Math.max(0,Math.min(100,Number(payload.visual_fx_intensity ?? 35))));
+          },p);
           const create=page.locator('#agBuildQueue');
           await create.waitFor({state:'visible',timeout:15000});
           await page.locator('#agFrom').fill(String(p.from_ayah));
