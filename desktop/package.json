@@ -1,0 +1,39 @@
+{
+  "name": "ayah-fi-daqiqa-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ayah Fi Daqiqa desktop application",
+  "main": "main.js",
+  "scripts": {
+    "dist:win": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "com.ayahfidaqiqa.desktop",
+    "productName": "Ayah Fi Daqiqa",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "app/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Ayah-Fi-Daqiqa-Windows-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  }
+}
