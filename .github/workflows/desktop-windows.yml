@@ -1,0 +1,45 @@
+name: Build Ayah Fi Daqiqa Windows
+on:
+  push:
+    branches: [desktop-windows-electron]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/desktop-windows.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch current generator UI for offline fallback
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path app | Out-Null
+          Invoke-WebRequest -Uri "https://khaled.elevatefollowers.com/" -OutFile "app/index.html" -MaximumRedirection 5 -TimeoutSec 90
+          if ((Get-Item "app/index.html").Length -lt 30000) { throw "Generator HTML seems incomplete" }
+          New-Item -ItemType Directory -Force -Path "app/assets/audio" | Out-Null
+          try { Invoke-WebRequest -Uri "https://khaled.elevatefollowers.com/assets/audio/birds-ambience.wav" -OutFile "app/assets/audio/birds-ambience.wav" -TimeoutSec 45 } catch { Write-Host "Optional sound unavailable" }
+      - name: Install Electron build tools
+        run: npm install --no-audit --no-fund
+      - name: Validate JavaScript
+        run: node --check main.js
+      - name: Create Windows installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:win
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ayah-Fi-Daqiqa-Windows-Installer
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+          retention-days: 14
