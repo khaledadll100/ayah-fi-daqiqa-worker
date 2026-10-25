@@ -126,7 +126,7 @@ jobs:
             const random=document.getElementById('agFixedCoverRandom');
             const style=document.getElementById('agFixedCoverStyle');
             if(style && payload.fixed_cover_style != null && !Number.isNaN(Number(payload.fixed_cover_style))){
-              style.value=String(Math.max(0,Math.min(9,Math.floor(Number(payload.fixed_cover_style)))));
+              style.value=String(Math.max(0,Math.min(39,Math.floor(Number(payload.fixed_cover_style)))));
               style.dispatchEvent(new Event('change',{bubbles:true}));
             }
             if(random){
