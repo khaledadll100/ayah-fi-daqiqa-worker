@@ -40,8 +40,14 @@ jobs:
         if: env.NO_TASK == '0'
         run: |
           npm init -y
-          npm install playwright
+          npm install playwright busboy
           npx playwright install --with-deps chromium
+
+      - name: Check video conversion tools
+        if: env.NO_TASK == '0'
+        run: |
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
 
       - name: Generate scheduled videos
         if: env.NO_TASK == '0'
@@ -181,6 +187,92 @@ jobs:
               }
             }catch(e){
               uploadError=e?.message || String(e);
+            }
+          });
+
+          // Convert only the scheduled browser's publishing uploads. Preserve the
+          // original multipart fields, API credentials, title and description.
+          // Conversion happens on the GitHub runner, not on PHP hosting.
+          const Busboy = (await import('busboy')).default;
+          const { Readable } = await import('node:stream');
+          const { spawn } = await import('node:child_process');
+          const { execFileSync } = await import('node:child_process');
+          const os = await import('node:os');
+          const path = await import('node:path');
+          const crypto = await import('node:crypto');
+          async function runFfmpeg(args) {
+            await new Promise((resolve,reject)=>{
+              const child=spawn('ffmpeg',['-hide_banner','-loglevel','error','-y',...args],{stdio:['ignore','ignore','pipe']});
+              let errors='';
+              child.stderr.on('data',b=>{ errors=(errors+b.toString()).slice(-4000); });
+              child.on('error',reject);
+              child.on('close',code=>code===0?resolve():reject(new Error('FFmpeg exit '+code+': '+errors)));
+            });
+          }
+          async function parseMultipart(buffer,contentType) {
+            return await new Promise((resolve,reject)=>{
+              const fields=[];
+              const files=[];
+              const parser=Busboy({headers:{'content-type':contentType},limits:{fileSize:1024*1024*1024}});
+              parser.on('field',(name,value)=>fields.push([name,value]));
+              parser.on('file',(name,stream,info)=>{
+                const chunks=[];
+                stream.on('data',chunk=>chunks.push(chunk));
+                stream.on('limit',()=>reject(new Error('Upload exceeds 1GB')));
+                stream.on('end',()=>files.push({name,filename:info.filename,mimeType:info.mimeType,buffer:Buffer.concat(chunks)}));
+              });
+              parser.on('error',reject);
+              parser.on('finish',()=>resolve({fields,files}));
+              Readable.from([buffer]).pipe(parser);
+            });
+          }
+          let convertedUploads=0;
+          await page.route('**/*',async route=>{
+            const req=route.request();
+            if(req.method()!=='POST' || req.url()!==String(p.destination_endpoint)) return route.continue();
+            let tempDir;
+            try {
+              const headers=await req.allHeaders();
+              const ct=headers['content-type']||'';
+              if(!ct.includes('multipart/form-data')) return route.continue();
+              const parsed=await parseMultipart(req.postDataBuffer(),ct);
+              const form=new FormData();
+              for(const [key,value] of parsed.fields) form.append(key,value);
+              tempDir=fs.mkdtempSync(path.join(os.tmpdir(),'ayah-mp4-'));
+              let index=0;
+              for(const file of parsed.files) {
+                const input=path.join(tempDir,'input-'+(++index));
+                const output=path.join(tempDir,'output-'+index+'.mp4');
+                fs.writeFileSync(input,file.buffer);
+                const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type','-of','json',input],{encoding:'utf8'}));
+                const hasAudio=(probe.streams||[]).some(x=>x.codec_type==='audio');
+                const args=['-i',input];
+                if(!hasAudio) args.push('-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=44100');
+                args.push('-map','0:v:0',...(hasAudio?['-map','0:a:0']:['-map','1:a:0']),
+                  '-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p',
+                  '-c:a','aac','-b:a','128k','-ar','44100','-ac','2',
+                  '-movflags','+faststart',...(hasAudio?[]:['-shortest']),output);
+                await runFfmpeg(args);
+                const result=fs.readFileSync(output);
+                if(result.toString('ascii',4,8)!=='ftyp') throw new Error('Converted file has no MP4 ftyp header');
+                const filename=(file.filename||'video').replace(/\.[^.]+$/,'')+'.mp4';
+                form.append(file.name,new Blob([result],{type:'video/mp4'}),filename);
+                convertedUploads++;
+                console.log('Converted publishing upload to MP4',filename,result.length);
+              }
+              const forwardHeaders={};
+              for(const [key,value] of Object.entries(headers)) {
+                if(['content-type','content-length','host','origin','referer','connection','accept-encoding'].includes(key)) continue;
+                forwardHeaders[key]=value;
+              }
+              const response=await fetch(req.url(),{method:'POST',headers:forwardHeaders,body:form,signal:AbortSignal.timeout(180000)});
+              const body=await response.text();
+              await route.fulfill({status:response.status,contentType:response.headers.get('content-type')||'application/json',body});
+            } catch(err) {
+              console.error('MP4 conversion/forwarding failed:',err);
+              await route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({ok:false,error:'MP4 conversion failed: '+String(err.message||err)})}).catch(()=>{});
+            } finally {
+              if(tempDir) fs.rmSync(tempDir,{recursive:true,force:true});
             }
           });
           const start=page.locator('button:visible').filter({hasText:'بدء الإنتاج'}).first();
