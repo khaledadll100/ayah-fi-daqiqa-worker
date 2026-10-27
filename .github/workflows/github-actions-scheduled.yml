@@ -247,7 +247,7 @@ jobs:
               for(const file of parsed.files) {
                 // The publishing request may also include a thumbnail image.
                 // Do not turn cover images into MP4 files.
-                const videoFile=/^video\\//i.test(file.mimeType||'') || /\\.(webm|mkv|mov|mp4)$/i.test(file.filename||'');
+                const videoFile=String(file.mimeType||'').startsWith('video/') || ['.webm','.mkv','.mov','.mp4'].some(ext=>String(file.filename||'').toLowerCase().endsWith(ext));
                 if(!videoFile) {
                   form.append(file.name,new Blob([file.buffer],{type:file.mimeType||'application/octet-stream'}),file.filename||'attachment');
                   console.log('Preserved non-video attachment',file.name,file.mimeType,file.buffer.length);
@@ -282,7 +282,7 @@ jobs:
                   throw new Error('MP4 validation failed: '+JSON.stringify({v,a,duration}));
                 const result=fs.readFileSync(output);
                 if(result.toString('ascii',4,8)!=='ftyp') throw new Error('Converted file has no MP4 ftyp header');
-                const filename=(file.filename||'video').replace(/\\.[^.]+$/,'')+'.mp4';
+                const filename=String(file.filename||'video').split('.').slice(0,-1).join('.')+'.mp4';
                 form.append(file.name,new Blob([result],{type:'video/mp4'}),filename);
                 convertedUploads++;
                 console.log('Verified Instagram-ready MP4',filename,'duration',duration,'size',result.length);
