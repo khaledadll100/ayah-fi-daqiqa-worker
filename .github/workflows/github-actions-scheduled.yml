@@ -261,8 +261,24 @@ jobs:
                 const video=streams.find(x=>x.codec_type==='video');
                 if(!video) throw new Error('Video upload has no video stream');
                 const hasAudio=streams.some(x=>x.codec_type==='audio');
-                const sourceDuration=Number(probe.format?.duration||video.duration||0);
-                if(!Number.isFinite(sourceDuration)||sourceDuration<=0) throw new Error('Video duration unavailable');
+                // MediaRecorder WebM files can have no duration metadata despite
+                // containing valid timestamped frames. Derive duration from packets.
+                let sourceDuration=Number(probe.format?.duration||video.duration||0);
+                if(!Number.isFinite(sourceDuration)||sourceDuration<=0) {
+                  const packetJson=JSON.parse(execFileSync('ffprobe',[
+                    '-v','error','-select_streams','v:0',
+                    '-show_entries','packet=pts_time,dts_time,duration_time',
+                    '-of','json',input],{encoding:'utf8',maxBuffer:64*1024*1024}));
+                  let end=0;
+                  for(const packet of packetJson.packets||[]) {
+                    const pts=Number(packet.pts_time??packet.dts_time);
+                    const dur=Number(packet.duration_time)||0;
+                    if(Number.isFinite(pts)) end=Math.max(end,pts+dur);
+                  }
+                  sourceDuration=end;
+                  console.log('Recovered WebM duration from frame timestamps:',sourceDuration);
+                }
+                if(!Number.isFinite(sourceDuration)||sourceDuration<=0) throw new Error('Video has no usable timestamps');
                 if(sourceDuration>90) throw new Error('Instagram video exceeds 90 seconds: '+sourceDuration);
                 const targetDuration=Math.max(3.5,sourceDuration);
                 const args=['-i',input];
