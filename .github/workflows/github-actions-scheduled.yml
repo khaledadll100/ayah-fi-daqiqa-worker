@@ -245,24 +245,47 @@ jobs:
               tempDir=fs.mkdtempSync(path.join(os.tmpdir(),'ayah-mp4-'));
               let index=0;
               for(const file of parsed.files) {
+                // The publishing request may also include a thumbnail image.
+                // Do not turn cover images into MP4 files.
+                const videoFile=/^video\\//i.test(file.mimeType||'') || /\\.(webm|mkv|mov|mp4)$/i.test(file.filename||'');
+                if(!videoFile) {
+                  form.append(file.name,new Blob([file.buffer],{type:file.mimeType||'application/octet-stream'}),file.filename||'attachment');
+                  console.log('Preserved non-video attachment',file.name,file.mimeType,file.buffer.length);
+                  continue;
+                }
                 const input=path.join(tempDir,'input-'+(++index));
                 const output=path.join(tempDir,'output-'+index+'.mp4');
                 fs.writeFileSync(input,file.buffer);
-                const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type','-of','json',input],{encoding:'utf8'}));
-                const hasAudio=(probe.streams||[]).some(x=>x.codec_type==='audio');
+                const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type,width,height,duration:format=duration','-of','json',input],{encoding:'utf8'}));
+                const streams=probe.streams||[];
+                const video=streams.find(x=>x.codec_type==='video');
+                if(!video) throw new Error('Video upload has no video stream');
+                const hasAudio=streams.some(x=>x.codec_type==='audio');
+                const sourceDuration=Number(probe.format?.duration||video.duration||0);
+                if(!Number.isFinite(sourceDuration)||sourceDuration<=0) throw new Error('Video duration unavailable');
+                if(sourceDuration>90) throw new Error('Instagram video exceeds 90 seconds: '+sourceDuration);
+                const targetDuration=Math.max(3.5,sourceDuration);
                 const args=['-i',input];
                 if(!hasAudio) args.push('-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=44100');
                 args.push('-map','0:v:0',...(hasAudio?['-map','0:a:0']:['-map','1:a:0']),
-                  '-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p',
+                  '-vf','scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,tpad=stop_mode=clone:stop_duration=4',
+                  '-af','apad','-t',String(targetDuration),
+                  '-r','30','-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p',
                   '-c:a','aac','-b:a','128k','-ar','44100','-ac','2',
-                  '-movflags','+faststart',...(hasAudio?[]:['-shortest']),output);
+                  '-movflags','+faststart',output);
                 await runFfmpeg(args);
+                const verified=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type,codec_name,width,height:format=duration','-of','json',output],{encoding:'utf8'}));
+                const v=verified.streams.find(x=>x.codec_type==='video');
+                const a=verified.streams.find(x=>x.codec_type==='audio');
+                const duration=Number(verified.format.duration);
+                if(!v||v.codec_name!=='h264'||v.width!==720||v.height!==1280||!a||a.codec_name!=='aac'||duration<3||duration>90.5)
+                  throw new Error('MP4 validation failed: '+JSON.stringify({v,a,duration}));
                 const result=fs.readFileSync(output);
                 if(result.toString('ascii',4,8)!=='ftyp') throw new Error('Converted file has no MP4 ftyp header');
-                const filename=(file.filename||'video').replace(/\.[^.]+$/,'')+'.mp4';
+                const filename=(file.filename||'video').replace(/\\.[^.]+$/,'')+'.mp4';
                 form.append(file.name,new Blob([result],{type:'video/mp4'}),filename);
                 convertedUploads++;
-                console.log('Converted publishing upload to MP4',filename,result.length);
+                console.log('Verified Instagram-ready MP4',filename,'duration',duration,'size',result.length);
               }
               const forwardHeaders={};
               for(const [key,value] of Object.entries(headers)) {
