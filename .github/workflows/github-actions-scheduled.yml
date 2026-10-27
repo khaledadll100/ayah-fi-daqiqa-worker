@@ -43,9 +43,13 @@ jobs:
           npm install playwright busboy
           npx playwright install --with-deps chromium
 
-      - name: Check video conversion tools
+      - name: Install and verify video conversion tools
         if: env.NO_TASK == '0'
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+          command -v ffmpeg
+          command -v ffprobe
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
 
