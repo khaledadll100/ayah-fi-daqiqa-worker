@@ -1,0 +1,80 @@
+name: Convert Legacy WebM for Instagram
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+concurrency:
+  group: instagram-webm-converter
+  cancel-in-progress: false
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      PUBLISHER_BASE_URL: ${{ secrets.PUBLISHER_BASE_URL }}
+      PUBLISHER_API_KEY: ${{ secrets.PUBLISHER_API_KEY }}
+    steps:
+      - name: Claim one conversion job
+        run: |
+          set -euo pipefail
+          test -n "$PUBLISHER_BASE_URL" && test -n "$PUBLISHER_API_KEY" || { echo "Configure PUBLISHER_BASE_URL and PUBLISHER_API_KEY secrets"; exit 1; }
+          curl -fsS --retry 2 -H "X-API-Key: $PUBLISHER_API_KEY" "${PUBLISHER_BASE_URL%/}/ig_convert.php?action=claim" -o job.json
+          jq -e '.ok == true' job.json >/dev/null
+          ID=$(jq -r '.job.id // empty' job.json)
+          if [ -z "$ID" ]; then echo "NO_JOB=1" >> "$GITHUB_ENV"; echo "No legacy video awaiting conversion"; exit 0; fi
+          echo "VIDEO_ID=$ID" >> "$GITHUB_ENV"
+          echo "Claimed video ID $ID"
+      - name: Install FFmpeg
+        if: env.NO_JOB != '1'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Download, transcode and validate
+        if: env.NO_JOB != '1'
+        run: |
+          set -euo pipefail
+          curl -fLSs --retry 2 -H "X-API-Key: $PUBLISHER_API_KEY" "${PUBLISHER_BASE_URL%/}/ig_convert.php?action=download&id=$VIDEO_ID" -o source.webm
+          test "$(stat -c%s source.webm)" -gt 1024
+          python3 - <<'PY'
+          import json,subprocess
+          def probe(args):
+              return json.loads(subprocess.check_output(['ffprobe','-v','error',*args,'-of','json','source.webm']))
+          meta=probe(['-show_entries','format=duration:stream=codec_type,duration'])
+          streams=meta.get('streams',[])
+          if not any(s.get('codec_type')=='video' for s in streams): raise ValueError('Missing video stream')
+          audio=any(s.get('codec_type')=='audio' for s in streams)
+          duration=float(meta.get('format',{}).get('duration') or 0)
+          if duration<=0:
+              packets=probe(['-select_streams','v:0','-show_entries','packet=pts_time,dts_time,duration_time'])
+              duration=max((float(p.get('pts_time') or p.get('dts_time') or 0)+float(p.get('duration_time') or 0) for p in packets.get('packets',[])),default=0)
+          if duration<=0 or duration>90: raise ValueError(f'Unsupported video duration: {duration}')
+          target=max(3.5,duration)
+          args=['ffmpeg','-hide_banner','-loglevel','error','-y','-i','source.webm']
+          if not audio: args+=['-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=44100']
+          args+=['-map','0:v:0','-map','0:a:0' if audio else '1:a:0',
+              '-vf','scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,tpad=stop_mode=clone:stop_duration=4',
+              '-af','apad','-t',str(target),'-r','30','-c:v','libx264','-preset','veryfast','-crf','23',
+              '-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-ar','44100','-ac','2',
+              '-movflags','+faststart','converted.mp4']
+          subprocess.run(args,check=True)
+          out=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_entries','stream=codec_type,codec_name,width,height:format=duration','-of','json','converted.mp4']))
+          video=next((s for s in out.get('streams',[]) if s.get('codec_type')=='video'),{})
+          sound=next((s for s in out.get('streams',[]) if s.get('codec_type')=='audio'),{})
+          length=float(out.get('format',{}).get('duration') or 0)
+          if video.get('codec_name')!='h264' or (video.get('width'),video.get('height'))!=(720,1280) or sound.get('codec_name')!='aac' or not 3<=length<=90.5:
+              raise ValueError(f'Output validation failed: {video} {sound} {length}')
+          print(f'Validated Instagram MP4: {length:.2f}s, 720x1280, H.264/AAC')
+          PY
+      - name: Upload converted copy
+        if: env.NO_JOB != '1'
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 2 -H "X-API-Key: $PUBLISHER_API_KEY" -F "video=@converted.mp4;type=video/mp4" "${PUBLISHER_BASE_URL%/}/ig_convert.php?action=complete&id=$VIDEO_ID" -o result.json
+          jq -e '.ok == true' result.json
+      - name: Report conversion failure
+        if: failure() && env.VIDEO_ID != ''
+        run: |
+          curl -fsS -H "X-API-Key: $PUBLISHER_API_KEY" -F "error=GitHub conversion failed; inspect workflow logs" "${PUBLISHER_BASE_URL%/}/ig_convert.php?action=fail&id=$VIDEO_ID" || true
