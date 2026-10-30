@@ -6,12 +6,16 @@ on:
     - cron: '*/5 * * * *'
 
 concurrency:
-  group: instagram-webm-converter
+  group: instagram-webm-converter-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   convert:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        worker: [1, 2, 3]
     timeout-minutes: 40
     env:
       PUBLISHER_BASE_URL: https://youtube.tawr-nafsak1.com
