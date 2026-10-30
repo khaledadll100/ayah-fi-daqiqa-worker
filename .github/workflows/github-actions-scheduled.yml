@@ -66,6 +66,21 @@ jobs:
           const context = await browser.newContext({acceptDownloads:true,viewport:{width:1080,height:1920}});
           const page = await context.newPage();
           page.on('console',m=>console.log('[BROWSER]',m.type(),m.text()));
+          // Protect automated publishing: failed recitation downloads must not
+          // silently become a 3.5-second video with missing Quran audio.
+          let recitationFetchFailure = '';
+          page.on('response',resp=>{
+            if (/\\.(mp3|m4a|ogg)(?:\\?|$)/i.test(resp.url()) && !resp.ok()) {
+              recitationFetchFailure = 'Audio HTTP '+resp.status()+' '+resp.url();
+              console.error('[RECITATION ERROR]',recitationFetchFailure);
+            }
+          });
+          page.on('requestfailed',req=>{
+            if (/\\.(mp3|m4a|ogg)(?:\\?|$)/i.test(req.url())) {
+              recitationFetchFailure = 'Audio request failed '+req.url()+' '+(req.failure()?.errorText||'');
+              console.error('[RECITATION ERROR]',recitationFetchFailure);
+            }
+          });
           await page.goto('https://khaled.elevatefollowers.com/',{waitUntil:'domcontentloaded',timeout:60000});
           await page.waitForTimeout(10000);
 
@@ -280,6 +295,11 @@ jobs:
                 }
                 if(!Number.isFinite(sourceDuration)||sourceDuration<=0) throw new Error('Video has no usable timestamps');
                 if(sourceDuration>90) throw new Error('Instagram video exceeds 90 seconds: '+sourceDuration);
+                // A near-empty recording must never be padded to 3.5 seconds
+                // and accepted as a legitimate Quran video.
+                console.log('Source WebM duration before conversion:',sourceDuration);
+                if(recitationFetchFailure) throw new Error('Refusing incomplete video: '+recitationFetchFailure);
+                if(sourceDuration<5) throw new Error('Refusing suspiciously short source video ('+sourceDuration+'s); audio may be missing');
                 const targetDuration=Math.max(3.5,sourceDuration);
                 const args=['-i',input];
                 if(!hasAudio) args.push('-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=44100');
@@ -318,6 +338,9 @@ jobs:
               if(tempDir) fs.rmSync(tempDir,{recursive:true,force:true});
             }
           });
+          // Recitation may be requested during queue creation, before recording.
+          // Fail closed rather than sending a video with incomplete verses.
+          if(recitationFetchFailure) throw new Error('Recitation download failed before production: '+recitationFetchFailure);
           const start=page.locator('button:visible').filter({hasText:'بدء الإنتاج'}).first();
           await start.click({force:true});
           // Large surahs can legitimately take well over 35 minutes. Allow ~90 sec per video + 10 min overhead, with a 35 min minimum.
