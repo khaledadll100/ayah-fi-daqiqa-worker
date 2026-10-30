@@ -14,13 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
-      PUBLISHER_BASE_URL: ${{ secrets.PUBLISHER_BASE_URL }}
+      PUBLISHER_BASE_URL: https://youtube.tawr-nafsak1.com
       PUBLISHER_API_KEY: ${{ secrets.PUBLISHER_API_KEY }}
     steps:
       - name: Claim one conversion job
         run: |
           set -euo pipefail
-          test -n "$PUBLISHER_BASE_URL" && test -n "$PUBLISHER_API_KEY" || { echo "Configure PUBLISHER_BASE_URL and PUBLISHER_API_KEY secrets"; exit 1; }
+          test -n "$PUBLISHER_API_KEY" || { echo "PUBLISHER_API_KEY secret is missing"; exit 1; }
           curl -fsS --retry 2 -H "X-API-Key: $PUBLISHER_API_KEY" "${PUBLISHER_BASE_URL%/}/ig_convert.php?action=claim" -o job.json
           jq -e '.ok == true' job.json >/dev/null
           ID=$(jq -r '.job.id // empty' job.json)
