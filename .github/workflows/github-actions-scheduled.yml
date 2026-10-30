@@ -275,12 +275,12 @@ jobs:
           let convertedUploads=0;
           await page.route('**/*',async route=>{
             const req=route.request();
-            if(req.method()!=='POST' || req.url()!==String(p.destination_endpoint)) return route.continue();
+            if(req.method()!=='POST' || req.url()!==String(p.destination_endpoint)) return route.fallback();
             let tempDir;
             try {
               const headers=await req.allHeaders();
               const ct=headers['content-type']||'';
-              if(!ct.includes('multipart/form-data')) return route.continue();
+              if(!ct.includes('multipart/form-data')) return route.fallback();
               const parsed=await parseMultipart(req.postDataBuffer(),ct);
               const form=new FormData();
               for(const [key,value] of parsed.fields) form.append(key,value);
