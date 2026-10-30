@@ -71,13 +71,13 @@ jobs:
           // silently become a 3.5-second video with missing Quran audio.
           let recitationFetchFailure = '';
           page.on('response',resp=>{
-            if (/\\.(mp3|m4a|ogg)(?:\\?|$)/i.test(resp.url()) && !resp.ok()) {
+            if (/[.](mp3|m4a|ogg)(?:[?]|$)/i.test(resp.url()) && !resp.ok()) {
               recitationFetchFailure = 'Audio HTTP '+resp.status()+' '+resp.url();
               console.error('[RECITATION ERROR]',recitationFetchFailure);
             }
           });
           page.on('requestfailed',req=>{
-            if (/\\.(mp3|m4a|ogg)(?:\\?|$)/i.test(req.url())) {
+            if (/[.](mp3|m4a|ogg)(?:[?]|$)/i.test(req.url())) {
               recitationFetchFailure = 'Audio request failed '+req.url()+' '+(req.failure()?.errorText||'');
               console.error('[RECITATION ERROR]',recitationFetchFailure);
             }
