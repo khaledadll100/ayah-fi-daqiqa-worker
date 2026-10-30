@@ -84,7 +84,7 @@ jobs:
           // Fetch Quran recitation from the runner (not the browser), avoiding
           // third-party CDN CORS restrictions. Retry transient upstream failures.
           // Register last so this route takes priority over the upload interceptor.
-          await page.route(/^https:\/\/cdn\\.islamic\\.network\/quran\/audio\/.*\\.mp3(?:\\?.*)?$/i,async route=>{
+          await page.route(url => url.startsWith('https://cdn.islamic.network/quran/audio/') && url.includes('.mp3'),async route=>{
             const url=route.request().url();
             let lastError='';
             for(let attempt=1;attempt<=5;attempt++){
