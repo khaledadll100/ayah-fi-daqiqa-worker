@@ -68,19 +68,22 @@ jobs:
               payload=urllib.parse.urlencode({'percent':str(pct)}).encode()
               req=urllib.request.Request(endpoint,data=payload,headers={'X-API-Key':key},method='POST')
               try:
-                  with urllib.request.urlopen(req,timeout=8) as response: response.read()
+                  with urllib.request.urlopen(req,timeout=2) as response: response.read()
               except Exception as exc:
                   print(f'Progress report unavailable (conversion continues): {exc}',flush=True)
           proc=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
           last=-1
+          last_sent_at=0.0
           for line in proc.stdout:
               if line.startswith('out_time_us=') or line.startswith('out_time_ms='):
                   try:
                       micros=int(line.split('=',1)[1])
                       pct=min(99,max(0,int((micros/1_000_000)/target*100)))
-                      if pct>=last+2 or (pct==99 and last<99):
+                      now=time.monotonic()
+                      if (pct>=last+10 and now-last_sent_at>=3) or (pct==99 and last<99):
                           report(pct)
                           last=pct
+                          last_sent_at=now
                   except ValueError: pass
           stderr=proc.stderr.read()
           if proc.wait()!=0: raise RuntimeError('FFmpeg conversion failed: '+stderr[-1500:])
