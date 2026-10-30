@@ -40,18 +40,8 @@ jobs:
         if: env.NO_TASK == '0'
         run: |
           npm init -y
-          npm install playwright busboy
+          npm install playwright
           npx playwright install --with-deps chromium
-
-      - name: Install and verify video conversion tools
-        if: env.NO_TASK == '0'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg
-          command -v ffmpeg
-          command -v ffprobe
-          ffmpeg -version | head -n 1
-          ffprobe -version | head -n 1
 
       - name: Generate scheduled videos
         if: env.NO_TASK == '0'
@@ -66,48 +56,6 @@ jobs:
           const context = await browser.newContext({acceptDownloads:true,viewport:{width:1080,height:1920}});
           const page = await context.newPage();
           page.on('console',m=>console.log('[BROWSER]',m.type(),m.text()));
-          page.on('pageerror',e=>console.error('[BROWSER PAGE ERROR]',e.message));
-          // Protect automated publishing: failed recitation downloads must not
-          // silently become a 3.5-second video with missing Quran audio.
-          let recitationFetchFailure = '';
-          page.on('response',resp=>{
-            if (/[.](mp3|m4a|ogg)(?:[?]|$)/i.test(resp.url()) && !resp.ok()) {
-              recitationFetchFailure = 'Audio HTTP '+resp.status()+' '+resp.url();
-              console.error('[RECITATION ERROR]',recitationFetchFailure);
-            }
-          });
-          page.on('requestfailed',req=>{
-            if (/[.](mp3|m4a|ogg)(?:[?]|$)/i.test(req.url())) {
-              recitationFetchFailure = 'Audio request failed '+req.url()+' '+(req.failure()?.errorText||'');
-              console.error('[RECITATION ERROR]',recitationFetchFailure);
-            }
-          });
-          // Fetch Quran recitation from the runner (not the browser), avoiding
-          // third-party CDN CORS restrictions. Retry transient upstream failures.
-          // Register last so this route takes priority over the upload interceptor.
-          await page.route('**/*',async route=>{
-            const audioUrl=route.request().url();
-            if(!(audioUrl.includes('/quran/audio/') && audioUrl.includes('.mp3'))) return route.fallback();
-            const url=route.request().url();
-            let lastError='';
-            for(let attempt=1;attempt<=5;attempt++){
-              try{
-                const response=await fetch(url,{signal:AbortSignal.timeout(25000)});
-                const bytes=Buffer.from(await response.arrayBuffer());
-                if(response.ok && bytes.length>1024){
-                  console.log('Recitation fetched via runner',url,'bytes',bytes.length,'attempt',attempt);
-                  await route.fulfill({status:200,contentType:'audio/mpeg',headers:{'access-control-allow-origin':'*','cache-control':'public, max-age=3600'},body:bytes});
-                  return;
-                }
-                lastError='HTTP '+response.status+' bytes '+bytes.length;
-                if(response.status===404) break;
-              }catch(e){lastError=String(e.message||e);}
-              await new Promise(resolve=>setTimeout(resolve,Math.min(1000*2**(attempt-1),8000)));
-            }
-            recitationFetchFailure='Recitation fetch failed: '+url+' '+lastError;
-            console.error('[RECITATION ERROR]',recitationFetchFailure);
-            await route.fulfill({status:502,contentType:'text/plain',headers:{'access-control-allow-origin':'*'},body:'Recitation temporarily unavailable'});
-          });
           await page.goto('https://khaled.elevatefollowers.com/',{waitUntil:'domcontentloaded',timeout:60000});
           await page.waitForTimeout(10000);
 
@@ -178,7 +126,7 @@ jobs:
             const random=document.getElementById('agFixedCoverRandom');
             const style=document.getElementById('agFixedCoverStyle');
             if(style && payload.fixed_cover_style != null && !Number.isNaN(Number(payload.fixed_cover_style))){
-              style.value=String(Math.max(0,Math.min(39,Math.floor(Number(payload.fixed_cover_style)))));
+              style.value=String(Math.max(0,Math.min(9,Math.floor(Number(payload.fixed_cover_style)))));
               style.dispatchEvent(new Event('change',{bubbles:true}));
             }
             if(random){
@@ -235,139 +183,6 @@ jobs:
               uploadError=e?.message || String(e);
             }
           });
-
-          // Convert only the scheduled browser's publishing uploads. Preserve the
-          // original multipart fields, API credentials, title and description.
-          // Conversion happens on the GitHub runner, not on PHP hosting.
-          const Busboy = (await import('busboy')).default;
-          const { Readable } = await import('node:stream');
-          const { spawn } = await import('node:child_process');
-          const { execFileSync } = await import('node:child_process');
-          const os = await import('node:os');
-          const path = await import('node:path');
-          const crypto = await import('node:crypto');
-          async function runFfmpeg(args) {
-            await new Promise((resolve,reject)=>{
-              const child=spawn('ffmpeg',['-hide_banner','-loglevel','error','-y',...args],{stdio:['ignore','ignore','pipe']});
-              let errors='';
-              child.stderr.on('data',b=>{ errors=(errors+b.toString()).slice(-4000); });
-              child.on('error',reject);
-              child.on('close',code=>code===0?resolve():reject(new Error('FFmpeg exit '+code+': '+errors)));
-            });
-          }
-          async function parseMultipart(buffer,contentType) {
-            return await new Promise((resolve,reject)=>{
-              const fields=[];
-              const files=[];
-              const parser=Busboy({headers:{'content-type':contentType},limits:{fileSize:1024*1024*1024}});
-              parser.on('field',(name,value)=>fields.push([name,value]));
-              parser.on('file',(name,stream,info)=>{
-                const chunks=[];
-                stream.on('data',chunk=>chunks.push(chunk));
-                stream.on('limit',()=>reject(new Error('Upload exceeds 1GB')));
-                stream.on('end',()=>files.push({name,filename:info.filename,mimeType:info.mimeType,buffer:Buffer.concat(chunks)}));
-              });
-              parser.on('error',reject);
-              parser.on('finish',()=>resolve({fields,files}));
-              Readable.from([buffer]).pipe(parser);
-            });
-          }
-          let convertedUploads=0;
-          await page.route('**/*',async route=>{
-            const req=route.request();
-            if(req.method()!=='POST' || req.url()!==String(p.destination_endpoint)) return route.fallback();
-            let tempDir;
-            try {
-              const headers=await req.allHeaders();
-              const ct=headers['content-type']||'';
-              if(!ct.includes('multipart/form-data')) return route.fallback();
-              const parsed=await parseMultipart(req.postDataBuffer(),ct);
-              const form=new FormData();
-              for(const [key,value] of parsed.fields) form.append(key,value);
-              tempDir=fs.mkdtempSync(path.join(os.tmpdir(),'ayah-mp4-'));
-              let index=0;
-              for(const file of parsed.files) {
-                // The publishing request may also include a thumbnail image.
-                // Do not turn cover images into MP4 files.
-                const videoFile=String(file.mimeType||'').startsWith('video/') || ['.webm','.mkv','.mov','.mp4'].some(ext=>String(file.filename||'').toLowerCase().endsWith(ext));
-                if(!videoFile) {
-                  form.append(file.name,new Blob([file.buffer],{type:file.mimeType||'application/octet-stream'}),file.filename||'attachment');
-                  console.log('Preserved non-video attachment',file.name,file.mimeType,file.buffer.length);
-                  continue;
-                }
-                const input=path.join(tempDir,'input-'+(++index));
-                const output=path.join(tempDir,'output-'+index+'.mp4');
-                fs.writeFileSync(input,file.buffer);
-                const probe=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type,width,height,duration:format=duration','-of','json',input],{encoding:'utf8'}));
-                const streams=probe.streams||[];
-                const video=streams.find(x=>x.codec_type==='video');
-                if(!video) throw new Error('Video upload has no video stream');
-                const hasAudio=streams.some(x=>x.codec_type==='audio');
-                // MediaRecorder WebM files can have no duration metadata despite
-                // containing valid timestamped frames. Derive duration from packets.
-                let sourceDuration=Number(probe.format?.duration||video.duration||0);
-                if(!Number.isFinite(sourceDuration)||sourceDuration<=0) {
-                  const packetJson=JSON.parse(execFileSync('ffprobe',[
-                    '-v','error','-select_streams','v:0',
-                    '-show_entries','packet=pts_time,dts_time,duration_time',
-                    '-of','json',input],{encoding:'utf8',maxBuffer:64*1024*1024}));
-                  let end=0;
-                  for(const packet of packetJson.packets||[]) {
-                    const pts=Number(packet.pts_time??packet.dts_time);
-                    const dur=Number(packet.duration_time)||0;
-                    if(Number.isFinite(pts)) end=Math.max(end,pts+dur);
-                  }
-                  sourceDuration=end;
-                  console.log('Recovered WebM duration from frame timestamps:',sourceDuration);
-                }
-                if(!Number.isFinite(sourceDuration)||sourceDuration<=0) throw new Error('Video has no usable timestamps');
-                if(sourceDuration>90) throw new Error('Instagram video exceeds 90 seconds: '+sourceDuration);
-                // A near-empty recording must never be padded to 3.5 seconds
-                // and accepted as a legitimate Quran video.
-                console.log('Source WebM duration before conversion:',sourceDuration);
-                if(recitationFetchFailure) throw new Error('Refusing incomplete video: '+recitationFetchFailure);
-                if(sourceDuration<5) throw new Error('Refusing suspiciously short source video ('+sourceDuration+'s); audio may be missing');
-                const targetDuration=Math.max(3.5,sourceDuration);
-                const args=['-i',input];
-                if(!hasAudio) args.push('-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=44100');
-                args.push('-map','0:v:0',...(hasAudio?['-map','0:a:0']:['-map','1:a:0']),
-                  '-vf','scale=720:1280:force_original_aspect_ratio=decrease,pad=720:1280:(ow-iw)/2:(oh-ih)/2,setsar=1,tpad=stop_mode=clone:stop_duration=4',
-                  '-af','apad','-t',String(targetDuration),
-                  '-r','30','-c:v','libx264','-preset','veryfast','-crf','23','-pix_fmt','yuv420p',
-                  '-c:a','aac','-b:a','128k','-ar','44100','-ac','2',
-                  '-movflags','+faststart',output);
-                await runFfmpeg(args);
-                const verified=JSON.parse(execFileSync('ffprobe',['-v','error','-show_entries','stream=codec_type,codec_name,width,height:format=duration','-of','json',output],{encoding:'utf8'}));
-                const v=verified.streams.find(x=>x.codec_type==='video');
-                const a=verified.streams.find(x=>x.codec_type==='audio');
-                const duration=Number(verified.format.duration);
-                if(!v||v.codec_name!=='h264'||v.width!==720||v.height!==1280||!a||a.codec_name!=='aac'||duration<3||duration>90.5)
-                  throw new Error('MP4 validation failed: '+JSON.stringify({v,a,duration}));
-                const result=fs.readFileSync(output);
-                if(result.toString('ascii',4,8)!=='ftyp') throw new Error('Converted file has no MP4 ftyp header');
-                const filename=String(file.filename||'video').split('.').slice(0,-1).join('.')+'.mp4';
-                form.append(file.name,new Blob([result],{type:'video/mp4'}),filename);
-                convertedUploads++;
-                console.log('Verified Instagram-ready MP4',filename,'duration',duration,'size',result.length);
-              }
-              const forwardHeaders={};
-              for(const [key,value] of Object.entries(headers)) {
-                if(['content-type','content-length','host','origin','referer','connection','accept-encoding'].includes(key)) continue;
-                forwardHeaders[key]=value;
-              }
-              const response=await fetch(req.url(),{method:'POST',headers:forwardHeaders,body:form,signal:AbortSignal.timeout(180000)});
-              const body=await response.text();
-              await route.fulfill({status:response.status,contentType:response.headers.get('content-type')||'application/json',body});
-            } catch(err) {
-              console.error('MP4 conversion/forwarding failed:',err);
-              await route.fulfill({status:502,contentType:'application/json',body:JSON.stringify({ok:false,error:'MP4 conversion failed: '+String(err.message||err)})}).catch(()=>{});
-            } finally {
-              if(tempDir) fs.rmSync(tempDir,{recursive:true,force:true});
-            }
-          });
-          // Recitation may be requested during queue creation, before recording.
-          // Fail closed rather than sending a video with incomplete verses.
-          if(recitationFetchFailure) throw new Error('Recitation download failed before production: '+recitationFetchFailure);
           const start=page.locator('button:visible').filter({hasText:'بدء الإنتاج'}).first();
           await start.click({force:true});
           // Large surahs can legitimately take well over 35 minutes. Allow ~90 sec per video + 10 min overhead, with a 35 min minimum.
