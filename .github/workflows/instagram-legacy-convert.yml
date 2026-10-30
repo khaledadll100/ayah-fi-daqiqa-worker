@@ -59,7 +59,31 @@ jobs:
               '-af','apad','-t',str(target),'-r','30','-c:v','libx264','-preset','veryfast','-crf','23',
               '-pix_fmt','yuv420p','-c:a','aac','-b:a','128k','-ar','44100','-ac','2',
               '-movflags','+faststart','converted.mp4']
-          subprocess.run(args,check=True)
+          # FFmpeg emits real processed timestamps; report them to hosting (0-99%).
+          import os,urllib.request,urllib.parse,time
+          args[1:1]=['-progress','pipe:1','-nostats']
+          endpoint=os.environ['PUBLISHER_BASE_URL'].rstrip('/')+'/ig_convert.php?action=progress&id='+os.environ['VIDEO_ID']
+          key=os.environ['PUBLISHER_API_KEY']
+          def report(pct):
+              payload=urllib.parse.urlencode({'percent':str(pct)}).encode()
+              req=urllib.request.Request(endpoint,data=payload,headers={'X-API-Key':key},method='POST')
+              try:
+                  with urllib.request.urlopen(req,timeout=8) as response: response.read()
+              except Exception as exc:
+                  print(f'Progress report unavailable (conversion continues): {exc}',flush=True)
+          proc=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+          last=-1
+          for line in proc.stdout:
+              if line.startswith('out_time_us=') or line.startswith('out_time_ms='):
+                  try:
+                      micros=int(line.split('=',1)[1])
+                      pct=min(99,max(0,int((micros/1_000_000)/target*100)))
+                      if pct>=last+2 or (pct==99 and last<99):
+                          report(pct)
+                          last=pct
+                  except ValueError: pass
+          stderr=proc.stderr.read()
+          if proc.wait()!=0: raise RuntimeError('FFmpeg conversion failed: '+stderr[-1500:])
           out=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_entries','stream=codec_type,codec_name,width,height:format=duration','-of','json','converted.mp4']))
           video=next((s for s in out.get('streams',[]) if s.get('codec_type')=='video'),{})
           sound=next((s for s in out.get('streams',[]) if s.get('codec_type')=='audio'),{})
