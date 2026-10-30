@@ -81,6 +81,30 @@ jobs:
               console.error('[RECITATION ERROR]',recitationFetchFailure);
             }
           });
+          // Fetch Quran recitation from the runner (not the browser), avoiding
+          // third-party CDN CORS restrictions. Retry transient upstream failures.
+          // Register last so this route takes priority over the upload interceptor.
+          await page.route(/^https:\/\/cdn\\.islamic\\.network\/quran\/audio\/.*\\.mp3(?:\\?.*)?$/i,async route=>{
+            const url=route.request().url();
+            let lastError='';
+            for(let attempt=1;attempt<=5;attempt++){
+              try{
+                const response=await fetch(url,{signal:AbortSignal.timeout(25000)});
+                const bytes=Buffer.from(await response.arrayBuffer());
+                if(response.ok && bytes.length>1024){
+                  console.log('Recitation fetched via runner',url,'bytes',bytes.length,'attempt',attempt);
+                  await route.fulfill({status:200,contentType:'audio/mpeg',headers:{'access-control-allow-origin':'*','cache-control':'public, max-age=3600'},body:bytes});
+                  return;
+                }
+                lastError='HTTP '+response.status+' bytes '+bytes.length;
+                if(response.status===404) break;
+              }catch(e){lastError=String(e.message||e);}
+              await new Promise(resolve=>setTimeout(resolve,Math.min(1000*2**(attempt-1),8000)));
+            }
+            recitationFetchFailure='Recitation fetch failed: '+url+' '+lastError;
+            console.error('[RECITATION ERROR]',recitationFetchFailure);
+            await route.fulfill({status:502,contentType:'text/plain',headers:{'access-control-allow-origin':'*'},body:'Recitation temporarily unavailable'});
+          });
           await page.goto('https://khaled.elevatefollowers.com/',{waitUntil:'domcontentloaded',timeout:60000});
           await page.waitForTimeout(10000);
 
