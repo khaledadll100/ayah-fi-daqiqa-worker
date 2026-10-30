@@ -66,6 +66,7 @@ jobs:
           const context = await browser.newContext({acceptDownloads:true,viewport:{width:1080,height:1920}});
           const page = await context.newPage();
           page.on('console',m=>console.log('[BROWSER]',m.type(),m.text()));
+          page.on('pageerror',e=>console.error('[BROWSER PAGE ERROR]',e.message));
           // Protect automated publishing: failed recitation downloads must not
           // silently become a 3.5-second video with missing Quran audio.
           let recitationFetchFailure = '';
@@ -84,7 +85,9 @@ jobs:
           // Fetch Quran recitation from the runner (not the browser), avoiding
           // third-party CDN CORS restrictions. Retry transient upstream failures.
           // Register last so this route takes priority over the upload interceptor.
-          await page.route('https://cdn.islamic.network/quran/audio/**/*.mp3',async route=>{
+          await page.route('**/*',async route=>{
+            const audioUrl=route.request().url();
+            if(!(audioUrl.includes('/quran/audio/') && audioUrl.includes('.mp3'))) return route.fallback();
             const url=route.request().url();
             let lastError='';
             for(let attempt=1;attempt<=5;attempt++){
