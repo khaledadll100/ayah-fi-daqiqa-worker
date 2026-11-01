@@ -1,0 +1,8 @@
+{
+  "name": "ayah-scheduled-worker",
+  "version": "2.0.0",
+  "private": true,
+  "description": "العامل المجدول: ينتج فيديوهات القرآن بصيغة MP4 ويرفعها لموقع النشر",
+  "scripts": { "start": "node worker.js" },
+  "dependencies": { "playwright": "^1.49.0" }
+}
