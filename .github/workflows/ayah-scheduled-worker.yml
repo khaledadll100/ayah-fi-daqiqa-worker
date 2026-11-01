@@ -1,0 +1,31 @@
+name: Ayah Scheduled Worker
+# مؤقّت مجاني فقط: كل 5 دقائق يفحص هل توجد مهمة مستحقة، فإن وُجدت ينفّذها (إنتاج MP4 + رفع مباشر لموقع النشر).
+# لا يوجد هنا أي تحويل صيغ ولا رفع بـ curl؛ كل ذلك يتم داخل المولّد نفسه.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+concurrency:
+  group: ayah-scheduled-worker
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Playwright
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+      - name: Run worker
+        env:
+          SITE_URL: https://khaled.elevatefollowers.com
+          AYAH_API_KEY: ${{ secrets.AYAH_API_KEY }}
+          MAX_RUN_MINUTES: 150
+        run: node worker.js
