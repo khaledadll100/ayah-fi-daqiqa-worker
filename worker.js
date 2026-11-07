@@ -264,7 +264,7 @@ async function runTask(task) {
       await page.waitForFunction(() => typeof state !== 'undefined' && Array.isArray(state.surahs) && state.surahs.length >= 100, null, {timeout:60000});
       const smartVerses = Number(p.smart_verses_per_video || 1);
       if (![1,2,3,5].includes(smartVerses)) throw new Error('عدد الآيات الذكي غير صالح');
-      await page.evaluate(({count, verses, diverseSurahs, diverseReciters}) => {
+      await page.evaluate(({count, verses, diverseSurahs, diverseReciters, backgroundMode, fxDiverse, coverDiverse, fontDiverse, format}) => {
         const set = (id, value) => {
           const el = document.getElementById(id);
           if (!el) throw new Error('حقل التوليد الذكي غير متاح: ' + id);
