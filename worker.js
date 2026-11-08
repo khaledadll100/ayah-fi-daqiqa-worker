@@ -110,7 +110,7 @@ async function runTask(task) {
       await page.locator('#agSurah').selectOption(String(p.surah));
       await pickByText(page, '#agReciter', p.reciter);
     }
-    if (!smart) { // Legacy static-range job settings only; smart jobs use their own defaults.
+    if (!smart) { // Legacy static-range choices only.
     await pickByText(page, '#agTranslationSelect', p.translation || 'بدون ترجمة');
     await pickByText(page, '#agTafsirSelect', p.tafsir || 'بدون تفسير');
     // Full-surah jobs store the numeric range length as verses_per_video;
@@ -122,6 +122,7 @@ async function runTask(task) {
     if (!p.background_url && !p.random_background && p.background_label && !p.background_label.includes('استخدم الخلفية الحالية')) {
       await pickByText(page, '#agBackgroundSelect', p.background_label.split('·')[0].trim());
     }
+    } // End range-only choices. Smart mode must also restore bird/logo/audio settings.
     // Restore the design snapshot captured when the task was created.
     // Never assume this fresh browser has the user's original localStorage.
     await page.evaluate(async (p) => {
@@ -174,6 +175,26 @@ async function runTask(task) {
         birdStudio.birds = snapshot.birds.map((b, i) => ({ ...b, id: Number(b.id) || i + 1 }));
         if (typeof renderBirdControls === 'function') renderBirdControls();
         if (typeof birdSyncTopControls === 'function') birdSyncTopControls();
+      }
+      if (p.generation_mode === 'smart') {
+        if(p.smart_logo_mode==='random'){
+          const urls=p.smart_logo_pool||[];
+          if(!Array.isArray(urls)||!urls.length||urls.some(u=>typeof u!=='string'||!/^https?:\/\//i.test(u)))
+            throw new Error('مكتبة الشعارات السحابية غير صالحة');
+          window.__agSmartLogoPool=urls;
+        }
+        const mode=p.smart_bird_mode || 'all';
+        if (!['all','selected','none'].includes(mode)) throw new Error('وضع الطيور غير صالح');
+        if (typeof birdStudio === 'undefined' || typeof BIRD_KIND === 'undefined') throw new Error('مكتبة الطيور غير متاحة في العامل');
+        birdStudio.enabled=mode!=='none';
+        birdStudio.randomEveryVideo=mode==='all';
+        if(!birdStudio.birds.length) birdStudio.birds=birdDefaults();
+        if(mode==='all') birdStudio.birds=[birdStudio.birds[0]];
+        if(mode==='selected') {
+          if (!BIRD_KIND[p.smart_bird_kind]) throw new Error('نوع الطائر المختار غير متاح: '+p.smart_bird_kind);
+          birdSetSingleKind(p.smart_bird_kind);
+        }
+        if(typeof birdSyncTopControls === 'function')birdSyncTopControls();
       }
       const ambient = d.ambient || {};
       const ambientOn = p.ambient_audio_enabled ?? ambient.enabled;
@@ -257,14 +278,13 @@ async function runTask(task) {
       }
     }, p);
 
-    }
     if (smart) {
       // لا نضغط زر الإنتاج مرتين: زر التوليد الذكي ينشئ القائمة ويبدأ agProduce بنفسه.
       await page.locator('#agSmartGenerate').waitFor({state:'attached', timeout:30000});
       await page.waitForFunction(() => typeof state !== 'undefined' && Array.isArray(state.surahs) && state.surahs.length >= 100, null, {timeout:60000});
       const smartVerses = Number(p.smart_verses_per_video || 1);
       if (![1,2,3,5].includes(smartVerses)) throw new Error('عدد الآيات الذكي غير صالح');
-      await page.evaluate(({count, verses, diverseSurahs, diverseReciters, backgroundMode, fxDiverse, coverDiverse, fontDiverse, format}) => {
+      await page.evaluate(({count, verses, diverseSurahs, diverseReciters, backgroundMode, fxDiverse, coverDiverse, fontDiverse, birdMode, birdKind, logoMode, logoOn, ambientOn, ambientVolume, format}) => {
         const set = (id, value) => {
           const el = document.getElementById(id);
           if (!el) throw new Error('حقل التوليد الذكي غير متاح: ' + id);
@@ -280,6 +300,11 @@ async function runTask(task) {
         set('agSmartFxDiverse', fxDiverse);
         set('agSmartCoverDiverse', coverDiverse);
         set('agSmartFontDiverse', fontDiverse);
+        set('agSmartBirdMode', birdMode);
+        if(birdMode==='selected')set('agSmartBirdKind', birdKind);
+        set('agSmartLogoMode', logoMode === 'random' ? 'random' : logoOn ? 'current' : 'none');
+        set('agSmartAmbientMode', ambientOn ? 'current' : 'off');
+        set('agSmartAmbientVolume', Math.round(ambientVolume*100));
         set('agFormat', format);
       }, {count:expected, verses:smartVerses,
           diverseSurahs:p.smart_diverse_surahs !== false,
@@ -288,6 +313,9 @@ async function runTask(task) {
           fxDiverse:p.smart_fx_diverse !== false,
           coverDiverse:p.smart_cover_diverse !== false,
           fontDiverse:p.smart_font_diverse !== false,
+          birdMode:p.smart_bird_mode||'all', birdKind:p.smart_bird_kind||'',
+          logoMode:p.smart_logo_mode||'none', logoOn:!!p.logo_enabled, ambientOn:!!p.ambient_audio_enabled,
+          ambientVolume:Number(p.ambient_audio_volume ?? .18),
           format:p.format === 'webm' ? 'webm':'mp4'});
       // التوليد العشوائي لا يجوز أن يعيد استخدام ملف صوت محلي مربوط بآية أخرى.
       await page.locator('#agSmartGenerate').click({force:true});
