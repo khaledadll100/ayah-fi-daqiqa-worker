@@ -88,6 +88,10 @@ async function runTask(task) {
     await page.goto(SITE_URL + '/', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.locator('#agSurah').waitFor({ state: 'attached', timeout: 30000 });
     await page.locator('#agBtnProduce').waitFor({ state: 'attached', timeout: 30000 });
+    const fontVersion = await page.evaluate(() => window.AYAH_FONT_ENGINE_VERSION || '');
+    if (fontVersion !== '20261117-fonts-v1') {
+      throw new Error('المولد المنشور غير محدث: ارفع index.html ومجلد assets/fonts كاملًا ثم أعد تشغيل المهمة');
+    }
     await page.waitForTimeout(1500);
 
     // إعدادات الرفع المباشر لموقع النشر (بدون أي نسخة محلية)
@@ -269,13 +273,8 @@ async function runTask(task) {
         bgSelect.value = String(idx);
         agSelectedBgIndex = idx;
       }
-      // Use identical font before recording, not a browser's default fallback.
-      const font = state.textSettings?.font || p.cinematic_font;
-      if (font) {
-        const family = getChoiceFontFamily(font);
-        if (family) await document.fonts.load(`40px ${family}`, 'بِسْمِ اللَّهِ');
-        await document.fonts.ready;
-      }
+      // The generator verifies the actual same-origin font face, not fallback.
+      await ensureExportFonts();
     }, p);
 
     if (smart) {
@@ -343,13 +342,26 @@ async function runTask(task) {
     while (Date.now() < deadline) {
       await page.waitForTimeout(5000);
       const msg = await page.locator('#agProdMsg').innerText().catch(() => '');
-      if (/تم إنتاج جميع|اكتمل الإنتاج|تم الإيقاف/.test(msg)) { finalMsg = msg; break; }
+      const finished = await page.evaluate(() => typeof agRunning !== 'undefined' && !agRunning &&
+        typeof agQueue !== 'undefined' && agQueue.length > 0 && agQueue.every(g => ['done', 'error'].includes(g.status)));
+      if (finished || /تم إنتاج جميع|اكتمل الإنتاج|تم الإيقاف/.test(msg)) { finalMsg = msg || 'انتهى الإنتاج'; break; }
       // إرسال التقدم للموقع ليظهر في قائمة المهام (فقط عند تغيّره)
       const upNow = await page.evaluate(() => window.__up).catch(() => ({ ok: 0, fail: 0 }));
       const progress = `جارٍ الإنتاج — تم رفع ${upNow.ok} من ${expected}` + (msg ? ' — ' + msg.replace(/\s+/g, ' ').slice(0, 120) : '');
       if (progress !== lastSent) { lastSent = progress; await report(task.id, { progress, uploaded: upNow.ok, expected }); }
     }
     if (!finalMsg) throw new Error('انتهت المهلة قبل اكتمال الإنتاج');
+
+    const queueStatus = await page.evaluate(() => typeof agQueue !== 'undefined'
+      ? agQueue.map(g => ({surah:g.sn, from:g.from, to:g.to, reciter:g.reciterName || g.reciterId || '',
+          status:g.status, error:g.error || '', font:g.renderedFont || '', font_family:g.renderedFontFamily || ''}))
+      : []).catch(() => []);
+    const failed = queueStatus.filter(g => g.status !== 'done');
+    if (failed.length) throw new Error('فشل ' + failed.length + ' فيديو: ' + failed.map(g => g.error).filter(Boolean).join('؛ '));
+    const distinctFonts = new Set(queueStatus.map(g => g.font).filter(Boolean));
+    const varyFonts = smart ? p.smart_font_diverse !== false : p.cinematic_auto_enabled && !p.cinematic_font_locked;
+    if (queueStatus.some(g => !g.font)) throw new Error('لم يؤكد المولد الخط المستخدم لكل فيديو');
+    if (varyFonts && expected > 1 && distinctFonts.size < 2) throw new Error('توقف التحقق: تنويع الخطوط مطلوب لكن كل الفيديوهات تستخدم خطًا واحدًا');
 
     // انتظار وصول آخر الفيديوهات إلى موقع النشر (حتى 6 دقائق)
     const upDeadline = Math.min(deadline, Date.now() + 6 * 60 * 1000);
@@ -359,10 +371,8 @@ async function runTask(task) {
       if (up.ok >= expected) break;
       await page.waitForTimeout(3000);
     }
-    const queueStatus = await page.evaluate(() => typeof agQueue !== 'undefined'
-      ? agQueue.map(g => ({surah:g.sn, from:g.from, to:g.to, reciter:g.reciterName || g.reciterId || '', status:g.status, error:g.error || ''}))
-      : []).catch(() => []);
-    const result = { mode: smart ? 'smart' : 'range', expected, uploaded: up.ok, failed_attempts: up.fail, message: finalMsg, queue:queueStatus };
+    const result = { mode: smart ? 'smart' : 'range', expected, uploaded: up.ok, failed_attempts: up.fail,
+      font_engine:fontVersion, distinct_fonts:distinctFonts.size, message: finalMsg, queue:queueStatus };
     console.log('RESULT', JSON.stringify(result));
     if (up.ok < expected) throw new Error(`رُفع ${up.ok} من ${expected} فيديو. ${finalMsg}`);
     return result;
