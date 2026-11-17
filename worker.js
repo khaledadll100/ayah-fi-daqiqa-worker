@@ -96,6 +96,12 @@ async function runTask(task) {
     if (fontVersion !== '20261117-fonts-v2' || fontState.loader !== fontVersion || fontState.choices !== 50) {
       throw new Error('المولد المنشور غير محدث: ارفع index.html ومجلد assets/fonts كاملًا ثم أعد تشغيل المهمة');
     }
+    const backgroundVersion = await page.evaluate(async () => {
+      if (window.AYAH_BACKGROUND_LIBRARY_VERSION !== '20261117-backgrounds-v3' || !window.__bgUpgrade?.ensureReady)
+        throw new Error('ارفع index.html و background-files-api.php المحدثين لتفعيل مكتبة الخلفيات');
+      await window.__bgUpgrade.ensureReady();
+      return window.AYAH_BACKGROUND_LIBRARY_VERSION;
+    });
     await page.waitForTimeout(1500);
 
     // إعدادات الرفع المباشر لموقع النشر (بدون أي نسخة محلية)
@@ -359,7 +365,8 @@ async function runTask(task) {
     const queueStatus = await page.evaluate(() => typeof agQueue !== 'undefined'
       ? agQueue.map(g => ({surah:g.sn, from:g.from, to:g.to, reciter:g.reciterName || g.reciterId || '',
           status:g.status, error:g.error || '', font:g.renderedFont || '', font_family:g.renderedFontFamily || '',
-          font_weight:g.renderedFontWeight || 400, requested_font:g.requestedFont || g.cinematicFont || '', font_replacement_reason:g.fontReplacementReason || ''}))
+          font_weight:g.renderedFontWeight || 400, requested_font:g.requestedFont || g.cinematicFont || '', font_replacement_reason:g.fontReplacementReason || '',
+          background_url:g.renderedBackgroundUrl || '', background_type:g.renderedBackgroundType || ''}))
       : []).catch(() => []);
     const failed = queueStatus.filter(g => g.status !== 'done');
     if (failed.length) throw new Error('فشل ' + failed.length + ' فيديو: ' + failed.map(g => g.error).filter(Boolean).join('؛ '));
@@ -377,7 +384,7 @@ async function runTask(task) {
       await page.waitForTimeout(3000);
     }
     const result = { mode: smart ? 'smart' : 'range', expected, uploaded: up.ok, failed_attempts: up.fail,
-      font_engine:fontVersion, distinct_fonts:distinctFonts.size, font_replacements:queueStatus.filter(g => g.font_replacement_reason).length, message: finalMsg, queue:queueStatus };
+      background_library:backgroundVersion, font_engine:fontVersion, distinct_fonts:distinctFonts.size, font_replacements:queueStatus.filter(g => g.font_replacement_reason).length, message: finalMsg, queue:queueStatus };
     console.log('RESULT', JSON.stringify(result));
     if (up.ok < expected) throw new Error(`رُفع ${up.ok} من ${expected} فيديو. ${finalMsg}`);
     return result;
