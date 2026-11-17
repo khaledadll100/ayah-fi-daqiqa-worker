@@ -88,8 +88,12 @@ async function runTask(task) {
     await page.goto(SITE_URL + '/', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.locator('#agSurah').waitFor({ state: 'attached', timeout: 30000 });
     await page.locator('#agBtnProduce').waitFor({ state: 'attached', timeout: 30000 });
-    const fontVersion = await page.evaluate(() => window.AYAH_FONT_ENGINE_VERSION || '');
-    if (fontVersion !== '20261117-fonts-v1') {
+    const fontState = await page.evaluate(() => ({
+      loader:window.AYAH_FONT_ENGINE_VERSION || '', app:window.AYAH_FONT_APP_VERSION || '',
+      choices:window.AYAH_FONT_CHOICES_COUNT || 0
+    }));
+    const fontVersion = fontState.app;
+    if (fontVersion !== '20261117-fonts-v2' || fontState.loader !== fontVersion || fontState.choices !== 50) {
       throw new Error('المولد المنشور غير محدث: ارفع index.html ومجلد assets/fonts كاملًا ثم أعد تشغيل المهمة');
     }
     await page.waitForTimeout(1500);
@@ -229,7 +233,7 @@ async function runTask(task) {
         animate: Boolean(p.logo_neon_animate ?? logo.neonAnimate ?? true)
       });
       if (p.cinematic_font) {
-        if (!FONT_CHOICES[p.cinematic_font]) throw new Error('الخط المختار لم يعد متاحًا');
+        if (!FONT_CHOICES[p.cinematic_font] && !FONT_REPLACEMENTS[p.cinematic_font]) throw new Error('الخط المختار لم يعد متاحًا');
         applyChoiceFont(p.cinematic_font, 'cinematic');
       }
       if (p.cinematic_font_size != null) {
@@ -354,7 +358,8 @@ async function runTask(task) {
 
     const queueStatus = await page.evaluate(() => typeof agQueue !== 'undefined'
       ? agQueue.map(g => ({surah:g.sn, from:g.from, to:g.to, reciter:g.reciterName || g.reciterId || '',
-          status:g.status, error:g.error || '', font:g.renderedFont || '', font_family:g.renderedFontFamily || ''}))
+          status:g.status, error:g.error || '', font:g.renderedFont || '', font_family:g.renderedFontFamily || '',
+          font_weight:g.renderedFontWeight || 400, requested_font:g.requestedFont || g.cinematicFont || '', font_replacement_reason:g.fontReplacementReason || ''}))
       : []).catch(() => []);
     const failed = queueStatus.filter(g => g.status !== 'done');
     if (failed.length) throw new Error('فشل ' + failed.length + ' فيديو: ' + failed.map(g => g.error).filter(Boolean).join('؛ '));
@@ -372,7 +377,7 @@ async function runTask(task) {
       await page.waitForTimeout(3000);
     }
     const result = { mode: smart ? 'smart' : 'range', expected, uploaded: up.ok, failed_attempts: up.fail,
-      font_engine:fontVersion, distinct_fonts:distinctFonts.size, message: finalMsg, queue:queueStatus };
+      font_engine:fontVersion, distinct_fonts:distinctFonts.size, font_replacements:queueStatus.filter(g => g.font_replacement_reason).length, message: finalMsg, queue:queueStatus };
     console.log('RESULT', JSON.stringify(result));
     if (up.ok < expected) throw new Error(`رُفع ${up.ok} من ${expected} فيديو. ${finalMsg}`);
     return result;
